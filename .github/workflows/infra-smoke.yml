@@ -5,12 +5,41 @@ on:
 
 jobs:
   integration-smoke:
-    runs-on: self-hosted
+    name: Integration VM Smoke Test
+    runs-on: [self-hosted, integration]
 
     steps:
       - name: Show host
         run: |
-          echo "Running on:"
+          hostname
+          uname -a
+
+      - name: Check basic tools
+        run: |
+          git --version
+          curl --version | head -1
+          jq --version
+
+      - name: Check Docker
+        run: |
+          docker --version
+          docker compose version
+          docker ps
+
+      - name: Check Kafka
+        run: |
+          docker exec kafka \
+            /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server localhost:9092 \
+            --list
+
+  staging-smoke:
+    name: Staging VM Smoke Test
+    runs-on: [self-hosted, staging]
+
+    steps:
+      - name: Show host
+        run: |
           hostname
           uname -a
 
