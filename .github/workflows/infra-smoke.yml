@@ -61,3 +61,32 @@ jobs:
             /opt/kafka/bin/kafka-topics.sh \
             --bootstrap-server localhost:9092 \
             --list
+            
+   production-smoke:
+    name: Production VM Smoke Test
+    runs-on: [self-hosted, production]
+
+    steps:
+      - name: Show host
+        run: |
+          hostname
+          uname -a
+
+      - name: Check basic tools
+        run: |
+          git --version
+          curl --version | head -1
+          jq --version
+
+      - name: Check Docker
+        run: |
+          docker --version
+          docker compose version
+          docker ps
+
+      - name: Check Kafka
+        run: |
+          docker exec kafka \
+            /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server localhost:9092 \
+            --list   
