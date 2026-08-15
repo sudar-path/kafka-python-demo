@@ -61,8 +61,8 @@ jobs:
             /opt/kafka/bin/kafka-topics.sh \
             --bootstrap-server localhost:9092 \
             --list
-            
-   production-smoke:
+
+  production-smoke:
     name: Production VM Smoke Test
     runs-on: [self-hosted, production]
 
@@ -89,4 +89,4 @@ jobs:
           docker exec kafka \
             /opt/kafka/bin/kafka-topics.sh \
             --bootstrap-server localhost:9092 \
-            --list   
+            --list
