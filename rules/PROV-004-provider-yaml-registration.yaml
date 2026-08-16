@@ -1,0 +1,52 @@
+id: PROV-004
+pack: provider-conventions
+title: A new operator module must be registered in provider.yaml
+severity: error
+owner: "@sudar-path"
+
+applies_to:
+  - "providers/apache/kafka/src/**/operators/*.py"
+  - "contribution/**/src/**/operators/*.py"
+
+detector:
+  kind: registry_sync
+  registry: "providers/apache/kafka/provider.yaml"
+  # Modules under this src root map to dotted paths that must appear in the
+  # registry. The linter derives the dotted name from the file path.
+  src_root: "providers/apache/kafka/src"
+  section: operators
+
+message: >-
+  This operator module is not listed in provider.yaml's operator registry.
+  Upstream's pre-commit fails when the module tree and the registry disagree.
+
+rationale: |
+  Touchpoint 3, and the single least discoverable one. Nothing in the operator
+  file references provider.yaml, and nothing in provider.yaml references the
+  file -- the coupling exists only in a pre-commit hook. A new engineer writes
+  a perfectly good operator, tests pass locally, and CI rejects it for a
+  reason that has nothing to do with the code they wrote.
+
+  It is also the touchpoint an agent is most likely to miss, because the
+  operator file it is editing contains no hint that a second file exists.
+
+  Registration is not cosmetic: the registry is what makes the operator
+  discoverable in the Airflow UI and in `airflow providers get`.
+
+evidence: |
+  providers/apache/kafka/provider.yaml at tag 3.3.1 lists exactly two operator
+  modules -- operators.consume and operators.produce -- which is also the
+  evidence for the gap this contribution fills: there is no admin operator at
+  all, and topic admin is hook-only.
+
+replacement: |
+  # provider.yaml
+  operators:
+    - integration-name: Apache Kafka
+      python-modules:
+        - airflow.providers.apache.kafka.operators.consume
+        - airflow.providers.apache.kafka.operators.produce
+        - airflow.providers.apache.kafka.operators.reset_offsets   # <-- add
+
+references:
+  - "handoff.md §3 -- touchpoint 3, and the gap being filled"

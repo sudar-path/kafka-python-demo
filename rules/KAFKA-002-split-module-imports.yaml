@@ -1,0 +1,56 @@
+id: KAFKA-002
+pack: kafka-admin-api
+title: confluent-kafka admin types are split across two modules; import from the right one
+severity: error
+owner: "@sudar-path"
+
+applies_to:
+  - "providers/apache/kafka/**/*.py"
+  - "contribution/**/*.py"
+  - "tools/**/*.py"
+
+detector:
+  kind: import_location
+  # symbol -> the ONLY module that actually exports it
+  symbols:
+    ConsumerGroupTopicPartitions: confluent_kafka
+    TopicPartition: confluent_kafka
+    OFFSET_INVALID: confluent_kafka
+    IsolationLevel: confluent_kafka
+    AdminClient: confluent_kafka.admin
+    OffsetSpec: confluent_kafka.admin
+    NewTopic: confluent_kafka.admin
+
+message: >-
+  This symbol is not exported by the module you imported it from. The two
+  modules are not interchangeable and neither re-exports the other.
+
+rationale: |
+  A single list_offsets() call needs TopicPartition (top level) and OffsetSpec
+  (admin) -- from OPPOSITE modules. Because AdminClient lives in
+  confluent_kafka.admin, the co-located import is the natural guess for every
+  admin-shaped type, and for half of them it is wrong.
+
+  ConsumerGroupTopicPartitions is the sharpest case: it reads like an admin
+  type, it appears in admin call signatures, and it is top-level only.
+
+  Cheap, deterministic, high hit rate. An ImportError is a fast failure rather
+  than a subtle one, but it costs a new engineer a build cycle every time, and
+  it is exactly the kind of thing that is nowhere in the docs.
+
+evidence: |
+  Confirmed identical on confluent-kafka 2.6.0 (INT) and 2.15.0 (STAG
+  container), 2026-08-15 -- so this is the API's shape, NOT version skew:
+
+      from confluent_kafka.admin import ConsumerGroupTopicPartitions  # ImportError
+      from confluent_kafka        import ConsumerGroupTopicPartitions  # correct
+
+replacement: |
+  from confluent_kafka import (
+      OFFSET_INVALID, ConsumerGroupTopicPartitions, TopicPartition,
+  )
+  from confluent_kafka.admin import AdminClient, OffsetSpec
+
+references:
+  - "handoff.md §4 Finding 3"
+  - "tools/offset_diff.py -- module docstring, 'API note, the hard-won kind'"

@@ -1,0 +1,66 @@
+# This rule was harvested from a bug in our OWN tooling, not from upstream.
+# That is the intended lifecycle: a defect found once becomes a detector so it
+# cannot be found twice.
+
+id: KAFKA-003
+pack: kafka-admin-api
+title: Never pass topic= to list_topics() -- it CREATES the topic
+severity: error
+owner: "@sudar-path"
+
+applies_to:
+  - "providers/apache/kafka/**/*.py"
+  - "contribution/**/*.py"
+  - "tools/**/*.py"
+
+detector:
+  kind: forbidden_kwarg
+  attr: list_topics
+  kwarg: topic
+
+message: >-
+  admin.list_topics(topic=X) issues a metadata request that NAMES X, and a
+  broker with auto.create.topics.enable=true (Kafka's default) creates it.
+  Fetch cluster-wide metadata and check membership instead.
+
+rationale: |
+  The failure is invisible from the tool's own output. list_topics(topic=X)
+  races the creation it triggers, so the call still reports "not found" -- you
+  get the correct answer AND a brand new topic. Nothing in stdout gives it away.
+
+  This matters most in exactly the place it is most tempting: an existence
+  check on the read-only side of a promotion gate. A dry run that creates
+  topics on a production broker is not a dry run, and the policy gate cannot
+  catch it either, because the diff artifact of a failed lookup is empty.
+
+  The replacement is heavier on a broker with thousands of topics. That is the
+  correct trade for a tool whose entire contract is "mutates nothing".
+
+evidence: |
+  Found on INT 2026-08-15 by noticing `no.such` and `no.such.topic` on the
+  broker -- topics nothing seeds, left behind by offset_diff.py's own
+  error-path testing. Reproduced deliberately before fixing:
+
+      $ offset_diff.py --topic canary.should.not.exist --to-latest
+      topic 'canary.should.not.exist' not found on localhost:9092    # exit 1, correct
+      $ kafka-topics.sh --list
+      __consumer_offsets
+      canary.should.not.exist          # <-- created by the "read-only" tool
+      payments.events
+
+  Verified absent after the fix.
+
+replacement: |
+  # before -- creates `topic` as a side effect
+  meta = admin.list_topics(topic=topic, timeout=timeout)
+  if topic not in meta.topics:
+      die(...)
+
+  # after -- never names the topic, so nothing can be auto-created
+  meta = admin.list_topics(timeout=timeout)
+  if topic not in meta.topics or meta.topics[topic].error is not None:
+      die(...)
+
+references:
+  - "handoff.md §14 -- 'a read-only tool that wasn't'"
+  - "tools/offset_diff.py:198-216 -- the fix, with the reasoning kept inline"

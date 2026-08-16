@@ -1,0 +1,64 @@
+# The demo closer. Every claim in `evidence` was reproduced on the INT VM
+# against a live broker at the declared dependency floor -- not read in a
+# changelog. See rules/README.md for why that distinction is load-bearing here.
+
+id: KAFKA-001
+pack: kafka-admin-api
+title: Use list_consumer_groups(), never the deprecated list_groups()
+severity: error
+owner: "@sudar-path"
+
+applies_to:
+  - "providers/apache/kafka/**/*.py"
+  - "contribution/**/*.py"
+  - "tools/**/*.py"
+
+detector:
+  kind: forbidden_call
+  attr: list_groups
+
+message: >-
+  list_groups() is deprecated. Use admin.list_consumer_groups() to enumerate and
+  admin.describe_consumer_groups() to inspect.
+
+rationale: |
+  This is the rule the whole pack exists to justify, because it is invisible to
+  every check a normal team already runs:
+
+    1. It is the name a model reaches for -- shortest, most obvious, and it is
+       what every pre-2.0 example on the internet uses.
+    2. It WORKS. Against a real broker it returns real data. Nothing fails.
+    3. Its docstring says nothing about deprecation, so reading the source or
+       the API reference tells you nothing is wrong.
+    4. The provider's own unit tests for this hook are mock-based, so a mocked
+       test stays green forever.
+    5. The deprecation is observable ONLY by making a live call and catching a
+       DeprecationWarning at runtime.
+
+  Docs, code review and the existing test suite all miss it simultaneously.
+  That is the class of defect worth automating. The ones a careful reviewer
+  already catches are not.
+
+evidence: |
+  Runtime probe, INT VM, confluent-kafka 2.6.0 (the declared floor), live
+  broker, 2026-08-15:
+
+      admin.list_groups(timeout=5)
+      -> DeprecationWarning: list_groups() is deprecated, use
+         list_consumer_groups() and describe_consumer_groups() instead.
+
+      list_groups.__doc__ mentions "deprecat*":  False
+
+replacement: |
+  # before
+  groups = admin.list_groups(timeout=10)
+
+  # after
+  listing = admin.list_consumer_groups(request_timeout=10).result()
+  described = admin.describe_consumer_groups(
+      [g.group_id for g in listing.valid], request_timeout=10
+  )
+
+references:
+  - "handoff.md §4 Finding 1 / §4a (the demo closer)"
+  - "confluent-kafka >= 2.0.2 ships both replacements; the 2.6.0 floor is fine"

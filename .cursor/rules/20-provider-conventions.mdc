@@ -1,0 +1,106 @@
+---
+description: Airflow provider conventions -- 4 rules (PROV-001, PROV-002, PROV-003, PROV-004)
+globs: contribution/**/*.py,contribution/**/operators/*.py,contribution/**/src/**/operators/*.py,providers/apache/kafka/**/*.py,providers/apache/kafka/**/operators/*.py,providers/apache/kafka/src/**/operators/*.py,tools/**/*.py
+alwaysApply: false
+---
+
+<!-- GENERATED FILE -- DO NOT EDIT. Source: rules/*.yaml. Regenerate: python tools/gen_rules.py -->
+
+# Airflow provider conventions
+
+Rules about the shape of an Airflow provider contribution. These are the touchpoints that upstream pre-commit and CI enforce but that nothing in the file you are editing mentions.
+
+## PROV-001 -- Every Python file needs the ASF licence header
+
+**error** · owner @sudar-path · enforced by lint_conventions.py (require_header: contains='Licensed to the Apache Software Foundation (ASF) under one')
+
+Missing the ASF licence header. Upstream's pre-commit rejects the file and the PR never reaches a human reviewer.
+
+Do this instead:
+
+```python
+# Copy the 16-line header verbatim from any existing file in the subtree,
+# e.g. providers/apache/kafka/src/airflow/providers/apache/kafka/hooks/client.py
+```
+
+**Why:** Touchpoint 2 of 10. Mechanical, invisible, and it costs a full CI round trip
+the first time -- which is precisely the ramp tax this pack exists to remove.
+A new engineer copying the nearest existing file usually gets this right by
+accident; a model generating a file from scratch usually does not.
+
+Cheap to detect, zero false positives, high frequency. This is the boring
+half of the pack and the boring half is most of the value.
+
+## PROV-002 -- Every module starts with `from __future__ import annotations`
+
+**error** · owner @sudar-path · enforced by lint_conventions.py (require_import: module='__future__', name='annotations')
+
+Missing `from __future__ import annotations`. Upstream requires it in every module, and without it the `X | None` annotations used throughout the provider fail at import time on the supported Python floor.
+
+Do this instead:
+
+```python
+from __future__ import annotations
+```
+
+**Why:** Touchpoint 2. This is a convention with teeth: the provider annotates with
+PEP 604 unions (`int | None`) in function signatures, which are evaluated at
+definition time unless annotations are postponed. Omit the import and the
+module raises TypeError on import rather than failing a lint.
+
+Worth knowing that the failure mode is an import error in an unrelated test,
+not a message naming the missing import.
+
+## PROV-003 -- Operators must declare template_fields
+
+**error** · owner @sudar-path · enforced by lint_conventions.py (require_class_attr: base_suffix='Operator', attr='template_fields')
+
+This Operator subclass does not declare `template_fields`. Without it, Jinja templating is silently disabled for every parameter on the operator.
+
+Do this instead:
+
+```python
+class ResetConsumerGroupOffsetsOperator(BaseOperator):
+    template_fields: Sequence[str] = (
+        "group_id", "topics", "to_timestamp", "kafka_config_id",
+    )
+```
+
+**Why:** Touchpoint 2, and the one that decides whether the contribution is worth
+making at all.
+
+The whole argument for ResetConsumerGroupOffsetsOperator is this DAG:
+
+    rewind = ResetConsumerGroupOffsetsOperator(
+        task_id="rewind",
+        group_id="etl_orders",
+        topics=["orders"],
+        to_timestamp="{{ data_interval_start }}",   # <-- templated
+    )
+
+## PROV-004 -- A new operator module must be registered in provider.yaml
+
+**error** · owner @sudar-path · enforced by lint_conventions.py (registry_sync: registry='providers/apache/kafka/provider.yaml', src_root='providers/apache/kafka/src', section='operators')
+
+This operator module is not listed in provider.yaml's operator registry. Upstream's pre-commit fails when the module tree and the registry disagree.
+
+Do this instead:
+
+```python
+# provider.yaml
+operators:
+  - integration-name: Apache Kafka
+    python-modules:
+      - airflow.providers.apache.kafka.operators.consume
+      - airflow.providers.apache.kafka.operators.produce
+      - airflow.providers.apache.kafka.operators.reset_offsets   # <-- add
+```
+
+**Why:** Touchpoint 3, and the single least discoverable one. Nothing in the operator
+file references provider.yaml, and nothing in provider.yaml references the
+file -- the coupling exists only in a pre-commit hook. A new engineer writes
+a perfectly good operator, tests pass locally, and CI rejects it for a
+reason that has nothing to do with the code they wrote.
+
+It is also the touchpoint an agent is most likely to miss, because the
+operator file it is editing contains no hint that a second file exists.

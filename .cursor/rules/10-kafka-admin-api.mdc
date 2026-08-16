@@ -1,0 +1,111 @@
+---
+description: Kafka admin client API -- 4 rules (KAFKA-001, KAFKA-002, KAFKA-003, KAFKA-004)
+globs: contribution/**/*.py,providers/apache/kafka/**/*.py,tools/**/*.py
+alwaysApply: false
+---
+
+<!-- GENERATED FILE -- DO NOT EDIT. Source: rules/*.yaml. Regenerate: python tools/gen_rules.py -->
+
+# Kafka admin client API
+
+Rules about confluent-kafka's AdminClient surface. These exist because the API has correct-looking calls that are deprecated, calls that mutate the broker despite reading as reads, and symbols split across two modules with no hint at the call site.
+
+## KAFKA-001 -- Use list_consumer_groups(), never the deprecated list_groups()
+
+**error** · owner @sudar-path · enforced by lint_conventions.py (forbidden_call: attr='list_groups')
+
+list_groups() is deprecated. Use admin.list_consumer_groups() to enumerate and admin.describe_consumer_groups() to inspect.
+
+Do this instead:
+
+```python
+# before
+groups = admin.list_groups(timeout=10)
+
+# after
+listing = admin.list_consumer_groups(request_timeout=10).result()
+described = admin.describe_consumer_groups(
+    [g.group_id for g in listing.valid], request_timeout=10
+)
+```
+
+**Why:** This is the rule the whole pack exists to justify, because it is invisible to
+every check a normal team already runs:
+
+  1. It is the name a model reaches for -- shortest, most obvious, and it is
+     what every pre-2.0 example on the internet uses.
+  2. It WORKS. Against a real broker it returns real data. Nothing fails.
+  3. Its docstring says nothing about deprecation, so reading the source or
+     the API reference tells you nothing is wrong.
+  4. The provider's own unit tests for this hook are mock-based, so a mocked
+     test stays green forever.
+  5. The deprecation is observable ONLY by making a live call and catching a
+     DeprecationWarning at runtime.
+
+## KAFKA-002 -- confluent-kafka admin types are split across two modules; import from the right one
+
+**error** · owner @sudar-path · enforced by lint_conventions.py (import_location: symbols=7 entries)
+
+This symbol is not exported by the module you imported it from. The two modules are not interchangeable and neither re-exports the other.
+
+Do this instead:
+
+```python
+from confluent_kafka import (
+    OFFSET_INVALID, ConsumerGroupTopicPartitions, TopicPartition,
+)
+from confluent_kafka.admin import AdminClient, OffsetSpec
+```
+
+**Why:** A single list_offsets() call needs TopicPartition (top level) and OffsetSpec
+(admin) -- from OPPOSITE modules. Because AdminClient lives in
+confluent_kafka.admin, the co-located import is the natural guess for every
+admin-shaped type, and for half of them it is wrong.
+
+ConsumerGroupTopicPartitions is the sharpest case: it reads like an admin
+type, it appears in admin call signatures, and it is top-level only.
+
+## KAFKA-003 -- Never pass topic= to list_topics() -- it CREATES the topic
+
+**error** · owner @sudar-path · enforced by lint_conventions.py (forbidden_kwarg: attr='list_topics', kwarg='topic')
+
+admin.list_topics(topic=X) issues a metadata request that NAMES X, and a broker with auto.create.topics.enable=true (Kafka's default) creates it. Fetch cluster-wide metadata and check membership instead.
+
+Do this instead:
+
+```python
+# before -- creates `topic` as a side effect
+meta = admin.list_topics(topic=topic, timeout=timeout)
+if topic not in meta.topics:
+    die(...)
+
+# after -- never names the topic, so nothing can be auto-created
+meta = admin.list_topics(timeout=timeout)
+if topic not in meta.topics or meta.topics[topic].error is not None:
+    die(...)
+```
+
+**Why:** The failure is invisible from the tool's own output. list_topics(topic=X)
+races the creation it triggers, so the call still reports "not found" -- you
+get the correct answer AND a brand new topic. Nothing in stdout gives it away.
+
+This matters most in exactly the place it is most tempting: an existence
+check on the read-only side of a promotion gate. A dry run that creates
+topics on a production broker is not a dry run, and the policy gate cannot
+catch it either, because the diff artifact of a failed lookup is empty.
+
+## KAFKA-004 -- A kafka connection carrying group.id makes every admin call emit CONFWARN
+
+**advisory** · owner @sudar-path · not machine-checkable -- advisory, this text is the only enforcement
+
+KafkaAdminClientHook builds on a producer handle and passes the whole connection `extra` through, so a shared kafka_default connection that carries group.id (which the consumer path needs) warns on every admin call.
+
+**Why:** This is a wart, not a defect -- and saying so is part of the rule. Nothing
+breaks; the warning is noise. It matters for two reasons:
+
+  1. Operator design. A new admin operator should not require its own
+     connection just to silence a warning, but it also should not surprise
+     an operator with rdkafka noise in every task log. Decide deliberately.
+  2. It is honest PR material. "Here is a wart we found while building"
+     reads better in an upstream contribution than pretending the surface
+     was clean.

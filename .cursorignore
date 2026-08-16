@@ -1,0 +1,64 @@
+# Context boundary for the Cursor agent. Gitignore syntax.
+#
+# WHAT THIS ACTUALLY BLOCKS -- and, more importantly, what it does not.
+#
+# Blocked:   Agent, Tab, Inline Edit, @-mentions, and codebase indexing.
+# NOT blocked: the terminal, and MCP tools.
+#
+# That second line is Cursor's documented behaviour, not a bug and not a
+# surprise -- but it means .cursorignore alone is an incomplete control. An
+# agent that cannot read handoff.md with the Read tool can still `cat` it. If
+# the boundary has to hold, .cursorignore is layer one and a
+# `beforeShellExecution` hook with "failClosed": true is layer two.
+#
+# We are treating that as load-bearing here for a specific reason. This project
+# already shipped a tool whose docstring said "read-only" and which created
+# topics on a live broker (handoff §14). The lesson written down at the time was
+# that a safety property asserted in prose and never asserted in code is not a
+# safety property. Trusting .cursorignore to block a `cat` would be the same
+# mistake with a different filename.
+#
+# Use .cursorindexingignore instead when you want a file excluded from the index
+# but still available to @-mention deliberately.
+
+# --- must never leave this machine -----------------------------------------
+# Contains EC2 hostnames, the SSH key path, and a plain-text note that the PROD
+# broker has no auth. Not in git, not in the index, not in agent context.
+handoff.md
+*.pem
+*.key
+
+# --- unrelated work in the same parent directory ----------------------------
+# Not secret, just noise -- indexing it would dilute retrieval on every query.
+telco-platform-demo/
+
+# --- generated, and holds live consumer-group offsets ------------------------
+# Written by the promote workflow on the runner. Real group/partition/offset
+# triples from PROD; there is no reason for an agent to read them and a good
+# reason not to index them.
+docs/changes/
+
+# --- generated, high-volume, zero signal ------------------------------------
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.airflow-home/
+node_modules/
+
+# --- artifacts -------------------------------------------------------------
+*.log
+.DS_Store
+
+# NOT ignored, deliberately:
+#   .cursor/rules/**  and  docs/RULES.md   are generated but MUST stay visible --
+#   they are the agent's own context, and gen_rules.py --check is what keeps
+#   them honest. Ignoring generated files by reflex would blind the agent to
+#   the rules it is supposed to follow.
+
+# Captured broker state for repeat rehearsals (tools/reset_demo.sh). Live
+# consumer-group offsets -- same reason docs/changes/ is here.
+baselines/

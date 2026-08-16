@@ -1,0 +1,54 @@
+# ADVISORY, AND DELIBERATELY UNDETECTABLE.
+#
+# Not every convention is mechanically checkable, and a rule pack that pretends
+# otherwise is lying about its own coverage. This rule ships to the Cursor agent
+# as context and to the humans as documentation, and the linter reports it as
+# "advisory -- no detector" rather than silently counting it as enforced.
+#
+# Keeping one honest non-detector in the pack is the point: it makes the
+# coverage number in `lint_conventions.py --summary` mean something.
+
+id: KAFKA-004
+pack: kafka-admin-api
+title: A kafka connection carrying group.id makes every admin call emit CONFWARN
+severity: advisory
+owner: "@sudar-path"
+
+applies_to:
+  - "providers/apache/kafka/**/*.py"
+  - "contribution/**/*.py"
+
+detector: null       # see the header. Config-shaped, not code-shaped.
+
+message: >-
+  KafkaAdminClientHook builds on a producer handle and passes the whole
+  connection `extra` through, so a shared kafka_default connection that carries
+  group.id (which the consumer path needs) warns on every admin call.
+
+rationale: |
+  This is a wart, not a defect -- and saying so is part of the rule. Nothing
+  breaks; the warning is noise. It matters for two reasons:
+
+    1. Operator design. A new admin operator should not require its own
+       connection just to silence a warning, but it also should not surprise
+       an operator with rdkafka noise in every task log. Decide deliberately.
+    2. It is honest PR material. "Here is a wart we found while building"
+       reads better in an upstream contribution than pretending the surface
+       was clean.
+
+  A detector is possible in principle (parse Airflow Connection extras and
+  flag group.id where the connection is used by an admin hook) but it would
+  need to resolve connection usage across files to avoid false positives on
+  the consumer path, which legitimately needs group.id. Not worth it yet.
+  Revisit if it bites someone a second time.
+
+evidence: |
+  Observed against the live STAG broker, 2026-08-15, running
+  KafkaAdminClientHook through the kafka_default connection:
+
+      CONFWARN|rdkafka#producer-1|: Configuration property group.id is a
+      consumer property and will be ignored by this producer instance
+
+references:
+  - "handoff.md §4 Finding 4"
+  - "handoff.md §9 -- 'one of the three is a wart rather than a defect', say so"

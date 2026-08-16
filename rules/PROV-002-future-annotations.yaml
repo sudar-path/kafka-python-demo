@@ -1,0 +1,39 @@
+id: PROV-002
+pack: provider-conventions
+title: Every module starts with `from __future__ import annotations`
+severity: error
+owner: "@sudar-path"
+
+applies_to:
+  - "providers/apache/kafka/**/*.py"
+  - "contribution/**/*.py"
+  - "tools/**/*.py"
+
+detector:
+  kind: require_import
+  module: __future__
+  name: annotations
+
+message: >-
+  Missing `from __future__ import annotations`. Upstream requires it in every
+  module, and without it the `X | None` annotations used throughout the
+  provider fail at import time on the supported Python floor.
+
+rationale: |
+  Touchpoint 2. This is a convention with teeth: the provider annotates with
+  PEP 604 unions (`int | None`) in function signatures, which are evaluated at
+  definition time unless annotations are postponed. Omit the import and the
+  module raises TypeError on import rather than failing a lint.
+
+  Worth knowing that the failure mode is an import error in an unrelated test,
+  not a message naming the missing import.
+
+evidence: |
+  Present in every module under providers/apache/kafka/ at tag 3.3.1, and in
+  all four tools in this repo.
+
+replacement: |
+  from __future__ import annotations
+
+references:
+  - "handoff.md §3 -- touchpoint 2"

@@ -1,0 +1,61 @@
+---
+description: Test conventions -- 2 rules (TEST-001, TEST-002)
+globs: contribution/**/src/**/hooks/*.py,contribution/**/src/**/operators/*.py,contribution/**/tests/integration/**/*.py,providers/apache/kafka/src/**/hooks/*.py,providers/apache/kafka/src/**/operators/*.py,providers/apache/kafka/tests/integration/**/*.py
+alwaysApply: false
+---
+
+<!-- GENERATED FILE -- DO NOT EDIT. Source: rules/*.yaml. Regenerate: python tools/gen_rules.py -->
+
+# Test conventions
+
+Rules about where tests live and what they must clean up. Both are structural: a test in the wrong directory is silently never collected, and a leaked topic makes the next run's failure someone else's problem.
+
+## TEST-001 -- Test files mirror the src path exactly
+
+**error** · owner @sudar-path · enforced by lint_conventions.py (path_mirror: src_root='providers/apache/kafka/src/airflow/providers/apache/kafka', test_root='providers/apache/kafka/tests/unit/apache/kafka', prefix='test_')
+
+No mirrored unit test found. Upstream's layout requires tests/unit/apache/kafka/<subpackage>/test_<module>.py for every src module.
+
+Do this instead:
+
+```python
+# for contribution/.../operators/reset_offsets.py, create:
+providers/apache/kafka/tests/unit/apache/kafka/operators/test_reset_offsets.py
+```
+
+**Why:** Touchpoint 5. The mirror is not a style preference -- pytest collection and
+upstream's coverage tooling both assume it, and a test placed one directory
+off is silently never run. "Silently never run" is the worst outcome
+available here: the suite is green and the code is untested.
+
+This is also the rule that makes "strengthen tests" a structural check
+rather than a judgement call. It cannot tell you a test is GOOD. It can tell
+you a test EXISTS in the place the tooling will look, which is the
+precondition for everything else.
+
+## TEST-002 -- Integration tests that create topics must delete them
+
+**error** · owner @sudar-path · enforced by lint_conventions.py (paired_call: requires='create_topic', pair='delete_topic')
+
+This module creates topics and never deletes them. On a shared broker the leftovers accumulate and test runs begin interfering with each other.
+
+Do this instead:
+
+```python
+@pytest.fixture
+def topic(hook):
+    name = f"operator.reset.test.integration.{uuid4().hex[:8]}"
+    hook.create_topic(topics=[(name, 3, 1)])
+    yield name
+    hook.delete_topic(topics=[name])     # runs even if the test fails
+```
+
+**Why:** This is a defect in the suite the new engineer is about to copy conventions
+from, which makes it the most useful kind of rule: it stops the scaffold
+imitating the nearest existing file when the nearest existing file is wrong.
+
+It is harmless today only because the leaked topics happen to be idempotent
+against their own leftovers -- reruns stayed green. That is luck, not
+design, and it stops being true the moment two runs overlap. int-tests.yml
+carries both a `concurrency:` group and an `if: always()` cleanup step to
+contain the blast radius, but containment is not a fix.

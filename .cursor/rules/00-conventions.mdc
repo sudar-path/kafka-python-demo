@@ -1,0 +1,46 @@
+---
+description: Project conventions for the Airflow Kafka provider contribution
+alwaysApply: true
+---
+
+<!-- GENERATED FILE -- DO NOT EDIT. Source: rules/*.yaml. Regenerate: python tools/gen_rules.py -->
+
+# Conventions
+
+This repo's conventions live in `rules/*.yaml` and are the source of truth for
+three things: the rules you are reading, the linter, and `docs/RULES.md`. If you
+want to change a convention, edit the YAML and run `python tools/gen_rules.py` --
+do not edit `.cursor/rules/` by hand, it is generated and CI checks it.
+
+There are 10 rules across 3 packs; 9 of them are machine-checked.
+
+## Before you say a change is done
+
+Run the linter. It is deterministic, offline, and takes under a second:
+
+```bash
+python tools/lint_conventions.py contribution/ --summary
+```
+
+Exit 0 clean, 1 violations, 2 the rule pack itself is malformed. Do not report
+work as complete on an unrun or failing linter, and do not silence a rule to get
+to green -- if a rule is wrong, say so and change the YAML.
+
+## What the linter cannot see
+
+The linter checks structure, not judgement. These rules carry no detector, so
+they are enforced only by you reading them:
+
+- **KAFKA-004** A kafka connection carrying group.id makes every admin call emit CONFWARN -- see `rules/KAFKA-004-admin-hook-group-id.yaml`
+
+A clean linter run therefore means "no structural violations found", not
+"correct". Say it that way.
+
+## Packs
+
+- **Kafka admin client API** (`kafka-admin-api`): KAFKA-001, KAFKA-002, KAFKA-003, KAFKA-004
+- **Airflow provider conventions** (`provider-conventions`): PROV-001, PROV-002, PROV-003, PROV-004
+- **Test conventions** (`test-conventions`): TEST-001, TEST-002
+
+Each pack auto-attaches on the files it governs, so you will see the detailed
+rules when you open a file they apply to.

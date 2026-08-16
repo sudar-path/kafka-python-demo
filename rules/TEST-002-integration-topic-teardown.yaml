@@ -1,0 +1,56 @@
+id: TEST-002
+pack: test-conventions
+title: Integration tests that create topics must delete them
+severity: error
+owner: "@sudar-path"
+
+applies_to:
+  - "providers/apache/kafka/tests/integration/**/*.py"
+  - "contribution/**/tests/integration/**/*.py"
+
+detector:
+  kind: paired_call
+  # If the first appears anywhere in the module, the second must too.
+  requires: create_topic
+  pair: delete_topic
+
+message: >-
+  This module creates topics and never deletes them. On a shared broker the
+  leftovers accumulate and test runs begin interfering with each other.
+
+rationale: |
+  This is a defect in the suite the new engineer is about to copy conventions
+  from, which makes it the most useful kind of rule: it stops the scaffold
+  imitating the nearest existing file when the nearest existing file is wrong.
+
+  It is harmless today only because the leaked topics happen to be idempotent
+  against their own leftovers -- reruns stayed green. That is luck, not
+  design, and it stops being true the moment two runs overlap. int-tests.yml
+  carries both a `concurrency:` group and an `if: always()` cleanup step to
+  contain the blast radius, but containment is not a fix.
+
+  Directly serves the QA audience: this is the concrete "weak test" that
+  /harden-tests targets, and the argument for generating fixtures with
+  teardown rather than copying.
+
+evidence: |
+  Observed on INT after a full integration run, 2026-08-15. Broker retained:
+
+      operator.consumer.test.integration.test_{1,2,3}
+      operator.producer.test.integration.test_{1,2}
+      trigger.await_message.test.integration.test_1
+
+  Only test_admin_client.py cleans up after itself -- it calls
+  hook.delete_topic. The operator and trigger tests create and abandon.
+
+replacement: |
+  @pytest.fixture
+  def topic(hook):
+      name = f"operator.reset.test.integration.{uuid4().hex[:8]}"
+      hook.create_topic(topics=[(name, 3, 1)])
+      yield name
+      hook.delete_topic(topics=[name])     # runs even if the test fails
+
+references:
+  - "handoff.md §5a Finding 5"
+  - ".github/workflows/int-tests.yml -- the cleanup step this rule makes unnecessary"

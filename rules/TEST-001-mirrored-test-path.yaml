@@ -1,0 +1,52 @@
+id: TEST-001
+pack: test-conventions
+title: Test files mirror the src path exactly
+severity: error
+owner: "@sudar-path"
+
+# Scoped to src trees only. Without the `src/` segment these globs also match
+# the test files themselves, and asking "does this test have a mirrored test"
+# is noise.
+applies_to:
+  - "providers/apache/kafka/src/**/operators/*.py"
+  - "providers/apache/kafka/src/**/hooks/*.py"
+  - "contribution/**/src/**/operators/*.py"
+  - "contribution/**/src/**/hooks/*.py"
+
+detector:
+  kind: path_mirror
+  src_root: "providers/apache/kafka/src/airflow/providers/apache/kafka"
+  test_root: "providers/apache/kafka/tests/unit/apache/kafka"
+  prefix: "test_"
+
+message: >-
+  No mirrored unit test found. Upstream's layout requires
+  tests/unit/apache/kafka/<subpackage>/test_<module>.py for every src module.
+
+rationale: |
+  Touchpoint 5. The mirror is not a style preference -- pytest collection and
+  upstream's coverage tooling both assume it, and a test placed one directory
+  off is silently never run. "Silently never run" is the worst outcome
+  available here: the suite is green and the code is untested.
+
+  This is also the rule that makes "strengthen tests" a structural check
+  rather than a judgement call. It cannot tell you a test is GOOD. It can tell
+  you a test EXISTS in the place the tooling will look, which is the
+  precondition for everything else.
+
+evidence: |
+  Verified against the layout at tag 3.3.1:
+
+      src/airflow/providers/apache/kafka/hooks/client.py
+      -> tests/unit/apache/kafka/hooks/test_client.py
+
+  79 unit tests collect from that tree on INT. A file outside it contributes
+  zero.
+
+replacement: |
+  # for contribution/.../operators/reset_offsets.py, create:
+  providers/apache/kafka/tests/unit/apache/kafka/operators/test_reset_offsets.py
+
+references:
+  - "handoff.md §3 -- touchpoint 5"
+  - "handoff.md §5a -- 79 unit tests green at the floor"

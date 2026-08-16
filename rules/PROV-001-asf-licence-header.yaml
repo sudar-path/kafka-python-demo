@@ -1,0 +1,38 @@
+id: PROV-001
+pack: provider-conventions
+title: Every Python file needs the ASF licence header
+severity: error
+owner: "@sudar-path"
+
+applies_to:
+  - "providers/apache/kafka/**/*.py"
+  - "contribution/**/*.py"
+
+detector:
+  kind: require_header
+  # Matched against the first 2 KB of the file, whitespace-normalised.
+  contains: "Licensed to the Apache Software Foundation (ASF) under one"
+
+message: >-
+  Missing the ASF licence header. Upstream's pre-commit rejects the file and
+  the PR never reaches a human reviewer.
+
+rationale: |
+  Touchpoint 2 of 10. Mechanical, invisible, and it costs a full CI round trip
+  the first time -- which is precisely the ramp tax this pack exists to remove.
+  A new engineer copying the nearest existing file usually gets this right by
+  accident; a model generating a file from scratch usually does not.
+
+  Cheap to detect, zero false positives, high frequency. This is the boring
+  half of the pack and the boring half is most of the value.
+
+evidence: |
+  apache/airflow @ tag 3.3.1: every .py file under providers/apache/kafka/
+  carries the header, and .pre-commit-config.yaml enforces it repo-wide.
+
+replacement: |
+  # Copy the 16-line header verbatim from any existing file in the subtree,
+  # e.g. providers/apache/kafka/src/airflow/providers/apache/kafka/hooks/client.py
+
+references:
+  - "handoff.md §3 -- the 10 touchpoints, #2 and #10"

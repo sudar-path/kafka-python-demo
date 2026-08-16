@@ -1,0 +1,58 @@
+id: PROV-003
+pack: provider-conventions
+title: Operators must declare template_fields
+severity: error
+owner: "@sudar-path"
+
+applies_to:
+  - "providers/apache/kafka/**/operators/*.py"
+  - "contribution/**/operators/*.py"
+
+detector:
+  kind: require_class_attr
+  base_suffix: Operator     # any class whose base name ends in "Operator"
+  attr: template_fields
+
+message: >-
+  This Operator subclass does not declare `template_fields`. Without it, Jinja
+  templating is silently disabled for every parameter on the operator.
+
+rationale: |
+  Touchpoint 2, and the one that decides whether the contribution is worth
+  making at all.
+
+  The whole argument for ResetConsumerGroupOffsetsOperator is this DAG:
+
+      rewind = ResetConsumerGroupOffsetsOperator(
+          task_id="rewind",
+          group_id="etl_orders",
+          topics=["orders"],
+          to_timestamp="{{ data_interval_start }}",   # <-- templated
+      )
+
+  That `{{ data_interval_start }}` is what makes Kafka backfillable from
+  Airflow. If `to_timestamp` is not in template_fields, the operator receives
+  the literal string "{{ data_interval_start }}" and the feature does not
+  exist. Nothing errors -- the seek just goes somewhere absurd.
+
+  Failing silently and only under a real scheduler is why this needs to be a
+  static rule: a mocked unit test cannot see it, and STAG is the only
+  environment where it would surface.
+
+evidence: |
+  ConsumeFromTopicOperator at tag 3.3.1 declares:
+
+      template_fields = ("topics", "apply_function_args",
+                         "apply_function_kwargs", "kafka_config_id")
+
+  So the convention is already established in the subtree the contribution
+  slots into -- the new operator has to match it, not invent it.
+
+replacement: |
+  class ResetConsumerGroupOffsetsOperator(BaseOperator):
+      template_fields: Sequence[str] = (
+          "group_id", "topics", "to_timestamp", "kafka_config_id",
+      )
+
+references:
+  - "handoff.md §3 -- the punchline DAG, and touchpoint 2"
