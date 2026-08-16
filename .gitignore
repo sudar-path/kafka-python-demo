@@ -34,9 +34,16 @@ handoff.md
 # public repo, holding both. Nothing about the filename suggests it contains
 # infrastructure detail, which is exactly why it survived every earlier read.
 #
-# Scoped to *.local.json rather than .claude/ wholesale, on the same reasoning
-# as the .cursor/rules note at the bottom: shared agent config is meant to be
-# reviewed in the open. It is the machine-local half that leaks.
+# BOTH tiers, not just *.local.json. The shared settings.json is clean as of
+# today, and that is not the point: it is an accreting cache of whatever anyone
+# happened to approve, it quotes those commands verbatim, and nobody re-reads
+# it. That is the same shape as the file that nearly leaked, one tier up.
+#
+# This is NOT the same category as .cursor/rules/ at the bottom of this file.
+# Those are curated, reviewed guidance and they ship. A permission cache is a
+# byproduct. If curated Claude context is ever added it belongs in .claude/ and
+# should ship -- which is why these are excluded by name, not the directory.
+.claude/settings.json
 .claude/settings.local.json
 **/settings.local.json
 
