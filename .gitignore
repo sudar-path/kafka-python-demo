@@ -1,0 +1,89 @@
+# What must not enter git history. Distinct from .cursorignore, which is a
+# CONTEXT boundary (what the agent may read) -- this is a DISTRIBUTION boundary
+# (what leaves this machine). They overlap heavily and are deliberately kept as
+# two files: an entry removed from one should have to be removed from the other
+# on purpose, not as a side effect.
+#
+# Order of defence, weakest to strongest:
+#   1. this file          -- stops the accident
+#   2. a hand-check of `git status` against the manifest before the first push
+#   3. conventions.yml "No operational notes in the tree" -- the backstop
+#
+# Note what 3 cannot do: it runs AFTER a push. A secret that reaches a remote is
+# not un-pushed by deleting it, and on a public repo it is not un-pushed at all.
+# So this file is the control that actually matters, and it exists because until
+# 2026-08-16 there was no .gitignore here at all -- the tree was protected only
+# by .cursorignore (which git does not read) and by a CI step that cannot run
+# before the push it is meant to prevent.
+
+# --- must never leave this machine ------------------------------------------
+# handoff.md carries EC2 hostnames, the SSH key path, and a plain-text note that
+# the PROD broker has no auth.
+handoff.md
+*.pem
+*.key
+*.p12
+*.jks
+.env
+.env.*
+
+# Agent permission grants. These record the exact commands that were approved,
+# which means they quote real invocations verbatim -- and the real invocations
+# carry the SSH key path and the STAG hostname. Found on 2026-08-16 during the
+# pre-push manifest check: settings.local.json was one `git add -A` away from a
+# public repo, holding both. Nothing about the filename suggests it contains
+# infrastructure detail, which is exactly why it survived every earlier read.
+#
+# Scoped to *.local.json rather than .claude/ wholesale, on the same reasoning
+# as the .cursor/rules note at the bottom: shared agent config is meant to be
+# reviewed in the open. It is the machine-local half that leaks.
+.claude/settings.local.json
+**/settings.local.json
+
+# The assignment brief. Not mine to publish -- it is the interviewer's material,
+# and a public repo is the one place it must not appear. `tools/run_on_int.sh`
+# already excluded *.pdf from what reaches a shared VM; this is the same
+# judgement applied to the distribution boundary, which had simply never been
+# asked the question.
+*.pdf
+
+# --- live broker state -------------------------------------------------------
+# Real consumer-group / partition / offset triples. docs/changes/ is also the
+# audit trail of previous promotions, which is why tools/reset_demo.sh must not
+# delete it without --artifacts; that makes it valuable locally and still
+# nothing that belongs in a public history.
+docs/changes/
+baselines/
+
+# --- operator tooling that carries infrastructure detail ----------------------
+# Hostnames and SSH invocations inline. The CI backstop lists these too.
+tools/run_on_int.sh
+tools/reset_demo.sh
+
+# --- unrelated work sharing the parent directory ------------------------------
+telco-platform-demo/
+
+# --- generated ----------------------------------------------------------------
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.airflow-home/
+node_modules/
+*.log
+.DS_Store
+
+# Rehearsal scripts emitted by tools/workflow_dryrun.py. Generated from the
+# workflows, so committing one creates a second copy that drifts.
+rehearse-*.sh
+run_stag_workflow.sh
+stag-report/
+int-report/
+
+# NOT ignored, deliberately: .cursor/rules/** and docs/RULES.md are generated
+# but MUST be committed -- they are the agent's context, and gen_rules.py
+# --check is what proves they still match rules/. Ignoring generated files by
+# reflex would ship a repo whose agent guidance nobody can see or review.
