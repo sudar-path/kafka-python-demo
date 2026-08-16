@@ -220,8 +220,15 @@ jobs:
             echo "overlay: $d -> ${REPO_DIR}/"
             cp -rv "$d" "${REPO_DIR}/"
           done
+          # `if`, not `[ -f "$f" ] && echo`. Under `bash -e` the && form makes the
+          # loop exit 1 whenever the LAST entry is a directory -- and it always is,
+          # because contribution/* sorts README.md before providers/. That failed
+          # this step on the first real run, after the overlay above had already
+          # succeeded: the work was done and the job still went red.
           for f in contribution/*; do
-            [ -f "$f" ] && echo "skipped (not an upstream path): $f"
+            if [ -f "$f" ]; then
+              echo "skipped (not an upstream path): $f"
+            fi
           done
 
       - name: Assert the floor did not drift
@@ -282,12 +289,21 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          docker exec kafka /opt/kafka/bin/kafka-topics.sh \
-            --bootstrap-server localhost:9092 --list 2>/dev/null \
-            | grep -E '^(operator|trigger)\..*\.test\.integration\.' \
-            | while read -r t; do
-                echo "deleting leaked topic: $t"
-                docker exec kafka /opt/kafka/bin/kafka-topics.sh \
-                  --bootstrap-server localhost:9092 --delete --topic "$t" 2>/dev/null || true
-              done
+          # grep is deliberately OUTSIDE the pipefail pipeline, and its exit code
+          # is swallowed. "No leaked topics" is the healthy outcome, but grep
+          # reports it as exit 1, and under `set -o pipefail` that turned a clean
+          # broker into a failed step -- a cleanup task that only passed when it
+          # had something to clean up.
+          topics=$(docker exec kafka /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server localhost:9092 --list 2>/dev/null || true)
+          leaked=$(echo "$topics" | grep -E '^(operator|trigger)\..*\.test\.integration\.' || true)
+          if [ -n "$leaked" ]; then
+            echo "$leaked" | while read -r t; do
+              echo "deleting leaked topic: $t"
+              docker exec kafka /opt/kafka/bin/kafka-topics.sh \
+                --bootstrap-server localhost:9092 --delete --topic "$t" 2>/dev/null || true
+            done
+          else
+            echo "no leaked topics"
+          fi
           echo "cleanup done"

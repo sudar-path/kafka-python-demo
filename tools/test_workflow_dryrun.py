@@ -14,12 +14,16 @@ invalid shell is the single most likely bug here, and only bash can tell you.
 
 from __future__ import annotations
 
+import glob
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
+
+import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -309,6 +313,99 @@ class ShippedWorkflowsTest(unittest.TestCase):
             self.skipTest("promote-prod.yml not present")
         with self.assertRaises(SystemExit):
             generate(path, "dry-run", allow=False)
+
+
+class ShellFailureModeTest(unittest.TestCase):
+    """Two idioms that report a SUCCESSFUL outcome as a red job.
+
+    `bash -n` cannot see either of these -- both are syntactically perfect, and
+    both depend on runtime exit codes. They are here because both shipped, and
+    both were found by the first real run of int-tests.yml on the remote rather
+    than by anything local:
+
+      1. `[ -f "$f" ] && echo ...` as the last statement of a loop body. Under
+         `bash -e` the loop takes the exit status of its final iteration, so the
+         step fails whenever the last entry does not match -- which for
+         `contribution/*` is always, since README.md sorts before providers/.
+         The overlay had already succeeded. The work was done and the job was
+         still red, which is the worst version of this bug: the failure points
+         nowhere near the cause.
+
+      2. `... | grep ... | ...` under `set -o pipefail`. Finding nothing is the
+         HEALTHY outcome for a leak check, but grep calls it exit 1, so the
+         cleanup step passed only when there was something to clean up.
+
+    Both are scanned as text across every workflow, including promote-prod.yml,
+    which the rehearsal harness cannot generate.
+    """
+
+    # Continuations are joined before scanning: both bugs span a `\` line break
+    # in the real workflows, and a line-at-a-time scan would miss them.
+    CONTINUATION = re.compile(r"\\\n\s*")
+
+    def _run_blocks(self):
+        """(workflow, step name, script) for every `run:` in every workflow."""
+        for path in sorted(glob.glob(os.path.join(WORKFLOWS, "*.yml"))):
+            with open(path) as fh:
+                doc = yaml.safe_load(fh)
+            # `on:` parses as the boolean True; irrelevant here, but jobs must
+            # be reached without assuming the key set.
+            for job in (doc.get("jobs") or {}).values():
+                for step in job.get("steps") or []:
+                    if isinstance(step.get("run"), str):
+                        yield (
+                            os.path.basename(path),
+                            step.get("name", "<unnamed>"),
+                            self.CONTINUATION.sub(" ", step["run"]),
+                        )
+
+    def test_no_bare_test_and_echo_as_the_last_statement_in_a_loop(self):
+        guard = re.compile(r"^\s*(\[\[?|test)\s.*?\]\]?\s*&&\s*\S")
+        for workflow, step, script in self._run_blocks():
+            lines = script.splitlines()
+            for i, line in enumerate(lines[:-1]):
+                if not guard.match(line) or "||" in line:
+                    continue  # `... || true` already neutralises the exit code
+                if re.match(r"^\s*done\s*$", lines[i + 1]):
+                    self.fail(
+                        f"{workflow} / {step}: `[ ... ] && ...` is the last "
+                        f"statement in a loop body, so under `bash -e` the whole "
+                        f"step fails when the final iteration does not match:\n"
+                        f"    {line.strip()}\n"
+                        f"Use `if ... then ... fi`."
+                    )
+
+    def test_grep_in_a_pipefail_pipeline_cannot_fail_the_step(self):
+        for workflow, step, script in self._run_blocks():
+            if "pipefail" not in script:
+                continue
+            for line in script.splitlines():
+                if not re.search(r"\|\s*grep\b", line):
+                    continue
+                stripped = line.strip()
+                # An `if`/`while` condition consumes the exit code deliberately.
+                if re.match(r"^(if|while|until|elif)\s", stripped):
+                    continue
+                # So does ANY `||` after the grep -- `|| true`, `|| :`, and the
+                # `| grep -qx true || { ... }` guard idiom in stag-tests.yml,
+                # which is correct code and which an earlier, narrower version of
+                # this check flagged. A rule that fires on correct code is worth
+                # less than no rule: it gets suppressed, and then the real
+                # instances go with it.
+                #
+                # Known blind spot: a `||` inside the pattern itself (an extended
+                # regex alternation) would read as handling. Accepted -- erring
+                # toward silence here, because the cost of a false alarm in a
+                # convention check is that people stop reading it.
+                after_grep = stripped[stripped.rfind("grep"):]
+                if "||" in after_grep:
+                    continue
+                self.fail(
+                    f"{workflow} / {step}: grep runs inside a `pipefail` "
+                    f"pipeline with its exit code load-bearing, so matching "
+                    f"nothing fails the step:\n    {stripped}\n"
+                    f"If no match is a valid outcome, add `|| true`."
+                )
 
 
 if __name__ == "__main__":
