@@ -1,0 +1,66 @@
+# Staging promotion policy for consumer-group offset seeks.
+#
+# This file is prod.yaml's rules, deliberately IDENTICAL on every safety value.
+# That is the entire point and it is worth stating plainly, because a staging
+# policy that is looser than production is worse than no staging policy at all:
+# it produces a green "passed staging" that predicts nothing about the gate the
+# change is actually about to meet.
+#
+# tools/test_policy_check.py enforces the identity (test_stag_is_prod_shaped),
+# so the two files cannot drift apart quietly. Scope -- allowed_topics and
+# allowed_groups -- is the ONE axis on which they are permitted to differ,
+# because scope is blast radius and the whole reason staging exists is that its
+# blast radius is survivable. Everything else must match.
+#
+# So what does the staging leg actually buy, if the policy is the same?
+# Different INFRASTRUCTURE, same gate. STAG runs Python 3.13 and provider
+# 1.15.1; INT runs Python 3.12 and provider 1.14.0; the code under test is
+# identical. A diff produced on STAG and passed through this gate proves the
+# artifact format, the seek arithmetic and the evaluator all still agree on a
+# box that is not the one they were written on. That is the class of failure
+# that otherwise surfaces for the first time in promote-prod.yml, at the point
+# where a human has already clicked approve.
+#
+# Why not just point stag-tests.yml at policy/prod.yaml and delete this file?
+# Because `environment:` below is stamped into the artifact and printed in the
+# approval summary. Evaluating STAG's diff against a file that says
+# "environment: production" produces an artifact labelled production that
+# describes staging -- which is precisely the mislabelling that gets the wrong
+# thing approved. The duplication is real; the identity test is what makes it
+# safe.
+
+version: 1
+environment: staging
+owners:
+  - "@sudar-path"
+
+rules:
+  # ---- scope (the ONE thing allowed to differ from prod) -----------------
+  # Identical to prod today, because STAG carries the same single topic and
+  # group. Kept as its own section anyway: when the staging leg grows a
+  # throwaway topic, this is where it goes, and the identity test will not
+  # object. Note that policy_check matches these EXACTLY -- no globs -- so the
+  # ephemeral operator.reset.test.integration.<hex> topics the integration
+  # suite creates are not covered here and were never meant to be. Those are
+  # exercised by pytest against a broker, not promoted through this gate.
+  allowed_topics:
+    - payments.events
+  allowed_groups:
+    - payments-reconciler
+
+  # ---- everything below MUST equal prod.yaml -----------------------------
+  # Copied, not relaxed. If you are here because staging denied a change you
+  # wanted to rehearse: that denial is the rehearsal succeeding. Change
+  # prod.yaml in a reviewed PR and copy it here, in that order.
+  forbidden_modes:
+    - to_earliest
+
+  max_messages_skipped: 0
+  max_messages_replayed: 5000
+  max_partitions_changed: 3
+
+  allow_out_of_range: false
+  allow_uncommitted_partitions: false
+
+  require_diff_schema_version: 1
+  max_diff_age_seconds: 1800

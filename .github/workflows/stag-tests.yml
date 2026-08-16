@@ -1,0 +1,464 @@
+# STAG gate — "does the change survive a real Airflow it was not developed on?"
+#
+# INT answers a different question. int-tests.yml runs pytest against a pinned
+# source checkout at the DEPENDENCY FLOOR (Python 3.12, provider 1.14.0,
+# confluent-kafka 2.6.0). Nothing there is deployed; nothing there renders a
+# template; the operator is imported from a working tree.
+#
+# STAG is a running Airflow 3.3.1 container on Python 3.13 with provider 1.15.1
+# installed from a wheel. Same code, different interpreter, different provider
+# baseline, and — the part that matters — a real scheduler with a real DagRun.
+#
+# Three claims live here and nowhere else:
+#
+#   1. `to_timestamp="{{ data_interval_start }}"` actually RENDERS.
+#      This is the premise of the entire change: Kafka becomes backfillable
+#      because Airflow fills in the window per run. Every other test in this
+#      repo would still pass if `to_timestamp` had been left out of
+#      template_fields — the unit tests construct the operator directly and the
+#      integration tests pass a literal epoch. Only a DagRun renders templates.
+#
+#   2. The deployed DAG PARSES. The operator imports tools.offset_diff across
+#      the packaging seam (see the header of reset_offsets.py). A seam that is
+#      papered over with PYTHONPATH in int-tests.yml has to be solved properly
+#      for a long-running dag-processor, and "properly" is the .pth below.
+#
+#   3. The promotion gate denies. policy/stag.yaml is prod.yaml's rules
+#      verbatim, so a diff that passes here passes there — and a diff that is
+#      denied here would have been denied in production, one environment
+#      earlier and without an approver in the loop.
+#
+# Nothing in this workflow mutates a committed offset. Every operator run is
+# dry_run=True and every tool invocation is offset_diff.py, which is read-only.
+# The job asserts that, before and after, rather than asserting it in a comment.
+#
+# Verified by hand on the STAG VM 2026-08-16: templating rendered
+# 2026-08-10 -> 1786320000000 and 2026-08-14 -> 1786665600000, offsets held at
+# 83/99/98 across three DagRuns.
+
+name: STAG tests
+
+on:
+  # STAG runs AFTER INT has passed, not in parallel with it. A staging leg that
+  # can go green while the unit tests are red is not a promotion step, it is a
+  # second opinion.
+  #
+  # workflow_run gotchas, both handled below:
+  #   * it always uses the DEFAULT BRANCH's copy of this file, so edits here do
+  #     not take effect until they are merged;
+  #   * actions/checkout defaults to the default branch HEAD, NOT the commit
+  #     that triggered the upstream run. Pinned explicitly in the checkout step.
+  workflow_run:
+    workflows: ["INT tests"]
+    types: [completed]
+  # Always available as an escape hatch: if the chain above misbehaves, the
+  # staging leg must still be runnable rather than silently skipped.
+  workflow_dispatch:
+
+# One Airflow, one broker, one consumer group. Two runs would each deploy over
+# the other's files mid-test.
+concurrency:
+  group: stag-tests
+  cancel-in-progress: false
+
+jobs:
+  deployed-airflow:
+    name: "Deployed Airflow + promotion gate"
+    runs-on: [self-hosted, staging]
+    timeout-minutes: 25
+
+    # Skip when INT failed. Without this, workflow_run fires on `completed`
+    # regardless of conclusion and STAG would happily test a change INT just
+    # rejected. workflow_dispatch has no workflow_run context, hence the first
+    # clause.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    env:
+      CONTAINER: airflow-stag
+      STAG_HOME: /home/ubuntu/airflow-stag
+      DAG_ID: example_kafka_reset_offsets
+      GROUP_ID: payments-reconciler
+      TOPIC: payments.events
+      # Two addresses for one broker, and they are not interchangeable.
+      #   from the RUNNER (host)      -> PLAINTEXT_HOST://localhost:9092
+      #   from INSIDE the container   -> PLAINTEXT://broker:19092
+      # The container resolves `broker` via a docker-network alias; the host
+      # does not. Using the wrong one produces a metadata timeout that reads
+      # like a dead broker.
+      BOOTSTRAP_HOST: "localhost:9092"
+      BOOTSTRAP_CONTAINER: "broker:19092"
+      OUT_DIR: stag-report
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # See the workflow_run note at the top: without this, a workflow_run
+          # job tests the default branch rather than the commit that passed INT.
+          # `|| ''` makes it a no-op for workflow_dispatch, where checkout's own
+          # default is correct.
+          ref: ${{ github.event.workflow_run.head_sha || '' }}
+
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -qx true || {
+            echo "::error::container '$CONTAINER' is not running on this box."
+            echo "Start it with: docker compose -f ${STAG_HOME}/docker-compose.yaml up -d"
+            exit 1
+          }
+          if ! (exec 3<>/dev/tcp/127.0.0.1/9092) 2>/dev/null; then
+            echo "::error::broker not reachable from the runner on ${BOOTSTRAP_HOST}"
+            exit 1
+          fi
+          docker exec "$CONTAINER" getent hosts broker >/dev/null || {
+            echo "::error::'broker' does not resolve inside $CONTAINER."
+            echo "The container must share the kafka_default network; the kafka"
+            echo "container publishes network aliases [kafka broker] on it."
+            exit 1
+          }
+          echo "container up, broker reachable from both sides"
+
+      # systemd does not source ~/.bashrc, so ~/.local/bin is missing from the
+      # runner's PATH even though uv works fine over SSH. Same fix as
+      # int-tests.yml; the long explanation lives there.
+      - name: Put uv on PATH
+        run: |
+          set -euo pipefail
+          [ -x "$HOME/.local/bin/uv" ] || curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # confluent-kafka + PyYAML only. These tools deliberately do not import
+      # Airflow, which is the whole reason the CLI dry run also works on a
+      # laptop. Pinned to the same floor INT tests against, so a diff produced
+      # here is byte-comparable with one produced there.
+      - name: Tool venv
+        run: |
+          set -euo pipefail
+          # --clear because self-hosted runners reuse their workspace. Without
+          # it, `uv venv` exits 2 with "A virtual environment already exists"
+          # on every run after the first. actions/checkout's `git clean -ffdx`
+          # normally removes it first, so this only bites when the workspace is
+          # reused without a clean checkout -- which is exactly the case that
+          # made this fail when the workflow was rehearsed on the box.
+          uv venv --clear --python 3.12 .venv-tools
+          uv pip install -q --python .venv-tools/bin/python confluent-kafka==2.6.0 pyyaml
+          .venv-tools/bin/python -c "import confluent_kafka,yaml;print('confluent-kafka',confluent_kafka.__version__)"
+
+      # Recorded BEFORE anything is deployed. Every assertion later about "the
+      # dry run changed nothing" is measured against this file, and it is
+      # compared again in an `if: always()` step so an early failure still tells
+      # you whether the broker was left alone.
+      - name: Record the offsets this job must not change
+        run: |
+          set -euo pipefail
+          docker exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+            --bootstrap-server localhost:9092 --describe --group "$GROUP_ID" 2>/dev/null \
+            | awk -v t="$TOPIC" 'NR>1 && $2==t {print $2"\t"$3"\t"$4}' | sort > "$OUT_DIR/offsets-before.tsv"
+          test -s "$OUT_DIR/offsets-before.tsv" || {
+            echo "::error::group '$GROUP_ID' has no committed offsets for '$TOPIC'."
+            echo "STAG's demo state is missing. Re-seed with tools/reset_demo.sh restore stag."
+            exit 1
+          }
+          cat "$OUT_DIR/offsets-before.tsv"
+
+      # ------------------------------------------------------------------
+      # Deployment. This is a DEMO deployment and it is honest about that:
+      # copying a module into a running container's site-packages is not how a
+      # provider ships. The real path is `uv build` in providers/apache/kafka/
+      # and a rebuilt image with the new wheel, which is what deploy/production/
+      # does. That takes minutes and buys nothing for the three claims this job
+      # makes, so it is deliberately not done here.
+      #
+      # What IS load-bearing: the .pth. The operator does
+      # `from tools.offset_diff import ...` at module import time, so `tools`
+      # must be importable by every process in the container -- not just the one
+      # `docker exec` sets PYTHONPATH for. The dag-processor is long-running and
+      # imports the DAG on its own; without the .pth the DAG shows up in the UI
+      # as an import error while `airflow dags test` passes, which is about the
+      # most confusing pair of symptoms available.
+      #
+      # tools/ goes to plugins/, NOT to dags/. Anything under dags/ is parsed as
+      # a DAG file, so tools/apply_offsets.py in there would be repeatedly
+      # imported by the scheduler looking for DAG objects.
+      # ------------------------------------------------------------------
+      - name: Deploy the contribution into the running Airflow
+        run: |
+          set -euo pipefail
+          OP_SRC=contribution/providers/apache/kafka/src/airflow/providers/apache/kafka/operators/reset_offsets.py
+          DAG_SRC=contribution/providers/apache/kafka/tests/system/apache/kafka/example_dag_reset_offsets.py
+          test -f "$OP_SRC" || { echo "::error::missing $OP_SRC"; exit 1; }
+          test -f "$DAG_SRC" || { echo "::error::missing $DAG_SRC"; exit 1; }
+
+          # Only the modules the operator imports. tools/run_on_int.sh and
+          # tools/reset_demo.sh are operator tooling that carries infrastructure
+          # detail and has no business inside a deployed image.
+          mkdir -p "${STAG_HOME}/plugins/tools"
+          cp tools/offset_diff.py tools/apply_offsets.py tools/policy_check.py \
+             "${STAG_HOME}/plugins/tools/"
+          cp "$DAG_SRC" "${STAG_HOME}/dags/"
+
+          SP=$(docker exec "$CONTAINER" python -c 'import site;print(site.getsitepackages()[0])')
+          docker cp "$OP_SRC" "${CONTAINER}:${SP}/airflow/providers/apache/kafka/operators/reset_offsets.py"
+          echo /opt/airflow/plugins | docker exec -i "$CONTAINER" tee "${SP}/_crsr_demo_tools.pth" >/dev/null
+          echo "deployed into ${SP}"
+
+      # The reason this leg exists, printed where a human will see it. If these
+      # numbers ever match INT's, someone has aligned the two environments and
+      # the staging leg has quietly stopped testing anything INT did not.
+      - name: Environment skew vs INT
+        run: |
+          set -euo pipefail
+          # Heredoc rather than `python -c "..."`: a multi-line -c string has to
+          # start at column 0, which is below this YAML block scalar's
+          # indentation and silently ends the block. The whole `run:` value
+          # after that point stops being a shell script.
+          docker exec -i "$CONTAINER" python - 2>/dev/null <<'PY' | tee "$OUT_DIR/skew.txt"
+          import sys
+          import confluent_kafka
+          from airflow import __version__ as airflow_version
+          from airflow.providers.apache.kafka import __version__ as provider_version
+
+          print(f"python      {sys.version.split()[0]}")
+          print(f"airflow     {airflow_version}")
+          print(f"provider    {provider_version}")
+          print(f"confluent   {confluent_kafka.__version__}")
+          PY
+          {
+            echo "## STAG environment"
+            echo ""
+            echo "INT tests at the dependency floor: python 3.12, provider 1.14.0, confluent-kafka 2.6.0."
+            echo "STAG runs the deployed image:"
+            echo '```'
+            cat "$OUT_DIR/skew.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # No PYTHONPATH here, on purpose. If this passes only with PYTHONPATH set,
+      # the .pth did not take and the dag-processor will fail even though this
+      # step would have gone green.
+      - name: Operator imports under STAG's interpreter
+        run: |
+          set -euo pipefail
+          docker exec -i "$CONTAINER" python - <<'PY'
+          import sys
+
+          import tools.offset_diff as offset_diff
+          from airflow.providers.apache.kafka.operators.reset_offsets import (
+              ResetConsumerGroupOffsetsOperator as Op,
+          )
+
+          print("tools resolved from", offset_diff.__file__)
+          print("template_fields =", Op.template_fields)
+          if "to_timestamp" not in Op.template_fields:
+              sys.exit(
+                  "::error::to_timestamp is not in template_fields, so Airflow will "
+                  "pass the literal '{{ data_interval_start }}' through. This is the "
+                  "one property the whole change rests on."
+              )
+          PY
+
+      # `dags test` runs the DAG in one process and would succeed even if the
+      # dag-processor could not parse the file. This is the check that catches
+      # "works in CI, red in the UI".
+      - name: Airflow parses the deployed DAG
+        run: |
+          set -euo pipefail
+          docker exec "$CONTAINER" airflow dags reserialize >/dev/null 2>&1 || true
+          errors=$(docker exec "$CONTAINER" airflow dags list-import-errors 2>/dev/null | grep -c "$DAG_ID" || true)
+          if [ "$errors" != "0" ]; then
+            echo "::error::the deployed DAG has import errors:"
+            docker exec "$CONTAINER" airflow dags list-import-errors 2>/dev/null
+            exit 1
+          fi
+          echo "no import errors for $DAG_ID"
+
+      # ------------------------------------------------------------------
+      # CLAIM 1. Two DagRuns at two logical dates. The operator logs the epoch
+      # it actually seeked to; that epoch must equal midnight UTC of the date
+      # Airflow was given, and the two runs must not produce the same value.
+      #
+      # The second assertion is the one that catches the realistic bug. If
+      # `to_timestamp` were dropped from template_fields, the operator would
+      # receive the literal string "{{ data_interval_start }}" and fail loudly —
+      # easy. The subtler failure is a value that renders once and is then
+      # reused, which a single run cannot distinguish from a correct one.
+      #
+      # Dates are computed relative to today rather than hardcoded, so this does
+      # not quietly start testing a date before the DAG's start_date in a year.
+      # ------------------------------------------------------------------
+      - name: Templating renders per run
+        run: |
+          set -euo pipefail
+          # Single line on purpose: a multi-line `python -c` string starts at
+          # column 0 and ends this YAML block scalar early.
+          read -r D1 D2 E1 E2 < <(python3 -c 'import datetime as dt; t = dt.datetime.now(dt.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0); a = t - dt.timedelta(days=6); b = t - dt.timedelta(days=2); print(a.date(), b.date(), int(a.timestamp() * 1000), int(b.timestamp() * 1000))')
+          for d in "$D1" "$D2"; do
+            echo "--- airflow dags test $DAG_ID $d"
+            docker exec "$CONTAINER" airflow dags test "$DAG_ID" "$d" \
+              > "$OUT_DIR/dagrun-$d.log" 2>&1 || {
+                echo "::error::DagRun failed for logical date $d"
+                tail -40 "$OUT_DIR/dagrun-$d.log"; exit 1; }
+            grep -E '^(group=|seek:|PART|[0-9] )|REPLAYED' "$OUT_DIR/dagrun-$d.log" || true
+          done
+
+          D1="$D1" D2="$D2" E1="$E1" E2="$E2" OUT_DIR="$OUT_DIR" python3 - <<'PY'
+          import os, re, sys
+
+          out = os.environ["OUT_DIR"]
+          seen = {}
+          for date, want in ((os.environ["D1"], int(os.environ["E1"])),
+                             (os.environ["D2"], int(os.environ["E2"]))):
+              log = open(f"{out}/dagrun-{date}.log", errors="replace").read()
+              m = re.search(r"^seek: to_timestamp (\d+) \(([^)]+)\)", log, re.M)
+              if not m:
+                  sys.exit(
+                      f"::error::no 'seek: to_timestamp' line in the {date} task log. "
+                      "Either the operator did not run or its log format changed; "
+                      "this assertion is parsing reset_offsets.render_table() output."
+                  )
+              got = int(m.group(1))
+              if got != want:
+                  sys.exit(
+                      f"::error::logical date {date} should render to {want} "
+                      f"(midnight UTC) but the operator seeked to {got} ({m.group(2)}). "
+                      "to_timestamp is not being rendered from data_interval_start."
+                  )
+              print(f"{date} -> {got} ({m.group(2)})  as expected")
+              seen[date] = got
+
+          if len(set(seen.values())) < len(seen):
+              sys.exit(
+                  "::error::two different logical dates rendered the SAME epoch "
+                  f"{seen}. The template is being resolved once and reused, not "
+                  "per DagRun -- check that to_timestamp is in template_fields "
+                  "and not captured at DAG-parse time."
+              )
+          print("templating renders per run")
+          PY
+
+      # CLAIM: dry_run=True means dry run. Asserted against the broker, not
+      # against the operator's own log line.
+      - name: The DagRuns changed nothing
+        run: |
+          set -euo pipefail
+          docker exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+            --bootstrap-server localhost:9092 --describe --group "$GROUP_ID" 2>/dev/null \
+            | awk -v t="$TOPIC" 'NR>1 && $2==t {print $2"\t"$3"\t"$4}' | sort > "$OUT_DIR/offsets-after.tsv"
+          if ! diff -u "$OUT_DIR/offsets-before.tsv" "$OUT_DIR/offsets-after.tsv"; then
+            echo "::error::committed offsets moved during a dry-run-only job."
+            echo "Every operator run in this workflow sets dry_run=True and every"
+            echo "tool invocation is offset_diff.py, which is read-only. Something"
+            echo "here writes to the broker and should not."
+            exit 1
+          fi
+          echo "committed offsets unchanged"
+
+      # ------------------------------------------------------------------
+      # CLAIM 3. The gate, exercised in both directions on staging data.
+      #
+      # A gate is only worth running if it can say no, and "it returned ALLOW"
+      # is indistinguishable from "it evaluated nothing". So both cases run, and
+      # the DENY case asserts WHICH rule fired -- a denial for the wrong reason
+      # is a passing test over a broken gate.
+      # ------------------------------------------------------------------
+      - name: Gate — a bounded rewind is ALLOWED
+        run: |
+          set -euo pipefail
+          # shift-by -10 replays 30 messages across 3 partitions: inside
+          # max_messages_replayed (5000) and max_partitions_changed (3), and
+          # skips nothing. Data-independent as long as the group is not sitting
+          # below offset 10 -- if it is, the diff goes out of range and the gate
+          # denies loudly rather than passing by accident.
+          .venv-tools/bin/python tools/offset_diff.py \
+            --group "$GROUP_ID" --topic "$TOPIC" --bootstrap "$BOOTSTRAP_HOST" \
+            --shift-by -10 --output "$OUT_DIR/allow-diff.json" | tee "$OUT_DIR/allow-diff.txt"
+          .venv-tools/bin/python tools/policy_check.py \
+            --policy policy/stag.yaml --diff "$OUT_DIR/allow-diff.json" \
+            --output "$OUT_DIR/allow-verdict.json" | tee "$OUT_DIR/allow-verdict.txt"
+          echo "gate allowed a bounded rewind, as it should"
+
+      - name: Gate — an unbounded rewind is DENIED, for the right reason
+        run: |
+          set -euo pipefail
+          .venv-tools/bin/python tools/offset_diff.py \
+            --group "$GROUP_ID" --topic "$TOPIC" --bootstrap "$BOOTSTRAP_HOST" \
+            --to-earliest --output "$OUT_DIR/deny-diff.json" > "$OUT_DIR/deny-diff.txt"
+          set +e
+          .venv-tools/bin/python tools/policy_check.py \
+            --policy policy/stag.yaml --diff "$OUT_DIR/deny-diff.json" \
+            --output "$OUT_DIR/deny-verdict.json" > "$OUT_DIR/deny-verdict.txt" 2>&1
+          rc=$?
+          set -e
+          cat "$OUT_DIR/deny-verdict.txt"
+          # Exit 1 is DENY. Exit 2 is a malformed policy or artifact -- the gate
+          # did not run at all, which must not be mistaken for a denial.
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::policy_check exited 2: the gate did NOT evaluate. Malformed policy or diff."
+            exit 1
+          fi
+          if [ "$rc" -ne 1 ]; then
+            echo "::error::policy/stag.yaml ALLOWED a to_earliest seek (exit $rc)."
+            echo "forbidden_modes must list to_earliest, and stag must match prod."
+            exit 1
+          fi
+          grep -q "forbidden_modes" "$OUT_DIR/deny-verdict.txt" || {
+            echo "::error::denied, but not by forbidden_modes. A denial for the wrong"
+            echo "reason means the rule under test is not the rule that fired."
+            exit 1
+          }
+          echo "gate denied to_earliest via forbidden_modes, as it should"
+
+      - name: Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "## Promotion gate rehearsal (policy/stag.yaml)"
+            echo ""
+            echo "policy/stag.yaml carries prod.yaml's rules verbatim — see its header and"
+            echo "\`test_stag_is_prod_shaped\`. A verdict here is the verdict production will give."
+            echo ""
+            echo "<details><summary>ALLOW — bounded rewind (shift-by -10)</summary>"
+            echo ""
+            echo '```'
+            cat "$OUT_DIR/allow-diff.txt" "$OUT_DIR/allow-verdict.txt" 2>/dev/null || echo "(did not run)"
+            echo '```'
+            echo "</details>"
+            echo ""
+            echo "<details><summary>DENY — unbounded rewind (to-earliest)</summary>"
+            echo ""
+            echo '```'
+            cat "$OUT_DIR/deny-verdict.txt" 2>/dev/null || echo "(did not run)"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Runs even when an earlier step failed. "Did this job leave the broker
+      # alone?" is the first question after a red staging run, and it should not
+      # require reading a log to answer.
+      - name: Offsets are unchanged even on failure
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -f "$OUT_DIR/offsets-before.tsv" ] || { echo "never got a baseline"; exit 0; }
+          docker exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+            --bootstrap-server localhost:9092 --describe --group "$GROUP_ID" 2>/dev/null \
+            | awk -v t="$TOPIC" 'NR>1 && $2==t {print $2"\t"$3"\t"$4}' | sort > "$OUT_DIR/offsets-final.tsv"
+          if diff -q "$OUT_DIR/offsets-before.tsv" "$OUT_DIR/offsets-final.tsv" >/dev/null; then
+            echo "broker untouched by this run"
+          else
+            echo "::error::this job changed committed offsets. Restore with: tools/reset_demo.sh restore stag"
+            diff -u "$OUT_DIR/offsets-before.tsv" "$OUT_DIR/offsets-final.tsv" || true
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stag-report-${{ github.run_id }}
+          path: ${{ env.OUT_DIR }}/
+          if-no-files-found: warn

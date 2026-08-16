@@ -1,0 +1,293 @@
+# INT gate — "is the code correct against the OLDEST dependency set we claim to support?"
+#
+# Runs the Apache Airflow Kafka provider's own unit + integration suites against the
+# real broker on the INT VM, with confluent-kafka pinned to the declared floor (2.6.0),
+# not whatever a fresh resolve produces (2.15.0, which is what STAG runs).
+#
+# Verified by hand on the INT VM 2026-08-15: 79 unit + 9 integration green.
+
+name: INT tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The broker is SHARED and upstream's integration tests leak topics
+# (operator.consumer.test.integration.*, trigger.await_message.*). Two concurrent
+# runs would interfere with each other. Serialise per-ref rather than debugging
+# a flake later.
+concurrency:
+  group: int-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  provider-tests:
+    # PINNED to the integration runner on purpose. Do not add `staging` or
+    # `production` here: PROD's broker deliberately does NOT expose the
+    # broker:29092 test listener these tests require, and adding one to a
+    # production broker to make CI pass would be exactly the wrong instinct.
+    runs-on: [self-hosted, integration]
+    timeout-minutes: 30
+
+    # ------------------------------------------------------------------
+    # This repository is PUBLIC and these runners are self-hosted on EC2 with
+    # Docker socket access. A pull_request from a fork runs the fork's version
+    # of this workflow, so without this guard anyone on the internet could open
+    # a PR and execute arbitrary code on the VMs.
+    #
+    # Repo settings already require approval for all external contributors;
+    # this is the second lock, in the file, where it is reviewable. Fork PRs are
+    # skipped outright rather than approved case by case.
+    # ------------------------------------------------------------------
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    env:
+      AIRFLOW_TAG: "3.3.1"
+      CONFLUENT_PIN: "2.6.0"
+      AIRFLOW_HOME: ${{ github.workspace }}/.airflow-home
+      # The operator imports tools.offset_diff / tools.apply_offsets across the
+      # PACKAGING SEAM documented at the top of reset_offsets.py: the seek
+      # arithmetic is shared with the CLI dry run so the artifact a human
+      # approves is the artifact the apply step consumes. `tools/` lives in THIS
+      # checkout; the tests run against the pinned airflow checkout in
+      # $RUNNER_TEMP, which only receives contribution/. Without this the whole
+      # suite dies at collection with:
+      #
+      #     ModuleNotFoundError: No module named 'tools.apply_offsets'
+      #
+      # and every test errors, so a green-looking "0 passed" is impossible but
+      # the cause is buried in a stack trace. This is a workaround for the seam,
+      # not a fix; the fix is the upstreaming move described in reset_offsets.py
+      # and it is deliberately not done here (tools/ must keep running on a
+      # laptop with no Airflow installed).
+      # Unlike ${{ runner.* }}, the github context IS available at job level.
+      PYTHONPATH: ${{ github.workspace }}
+      # REPO_DIR is deliberately NOT set here. The `runner` context does not
+      # exist at job level -- only `github`, `inputs`, `needs`, `strategy`,
+      # `matrix`, `vars` and `secrets` do -- so `${{ runner.temp }}` expands to
+      # the empty string and REPO_DIR becomes "/airflow-src", at the filesystem
+      # root. Every step would then fail on permission denied. Caught by
+      # actionlint before this workflow ever ran; set in a step instead, below.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # $RUNNER_TEMP is a plain environment variable and IS available to steps,
+      # unlike the ${{ runner.* }} expression context at job level. See above.
+      - name: Resolve REPO_DIR
+        run: |
+          set -euo pipefail
+          echo "REPO_DIR=${RUNNER_TEMP}/airflow-src" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------
+      # The self-hosted runner runs as a systemd service. systemd does NOT
+      # source ~/.bashrc or ~/.profile, so ~/.local/bin is absent from PATH
+      # even though `uv` is installed and works fine in an interactive SSH
+      # session. This is not theoretical: tests_common/pytest_plugin.py:198
+      # shells out to `uv` at PLUGIN IMPORT TIME, before a single test runs.
+      # Without this step the job dies with:
+      #     FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+      # and collects zero tests.
+      # ------------------------------------------------------------------
+      - name: Put uv on PATH for subsequent steps
+        run: |
+          set -euo pipefail
+          if [ ! -x "$HOME/.local/bin/uv" ]; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify uv is actually resolvable
+        run: |
+          set -euo pipefail
+          command -v uv || { echo "::error::uv still not on PATH -- \$GITHUB_PATH did not take effect"; exit 1; }
+          uv --version
+
+      # ------------------------------------------------------------------
+      # Fail fast with an actionable message. Without this, a job scheduled on
+      # the wrong runner spends ~80s timing out inside confluent-kafka and then
+      # reports a generic broker timeout that tells you nothing.
+      # ------------------------------------------------------------------
+      - name: Preflight — broker must answer on the address upstream hardcodes
+        run: |
+          set -euo pipefail
+          if ! (exec 3<>/dev/tcp/127.0.0.1/29092) 2>/dev/null; then
+            echo "::error::Broker not reachable on 127.0.0.1:29092."
+            echo "Upstream's provider tests hardcode bootstrap.servers=broker:29092 (Breeze's address)."
+            echo "This runner needs demo-infra/kafka/docker-compose.override.yaml applied."
+            echo "Only INT and STAG carry that listener; PROD deliberately does not."
+            exit 1
+          fi
+          grep -q "127.0.0.1 broker" /etc/hosts || {
+            echo "::error::'broker' does not resolve on this host."
+            echo "The broker advertises PLAINTEXT_TEST://broker:29092, so the client must resolve that name."
+            echo "Fix: echo '127.0.0.1 broker' | sudo tee -a /etc/hosts"
+            exit 1
+          }
+          echo "broker:29092 reachable"
+
+      - name: Bootstrap provider env at the dependency floor
+        run: |
+          set -euo pipefail
+          chmod +x deploy/integration/bootstrap-int.sh
+          REPO_DIR="${REPO_DIR}" \
+          AIRFLOW_TAG="${AIRFLOW_TAG}" \
+          CONFLUENT_PIN="${CONFLUENT_PIN}" \
+            deploy/integration/bootstrap-int.sh
+
+      # ------------------------------------------------------------------
+      # contribution/ carries whole files, because the overlay below is `cp -r`
+      # and cp overwrites rather than merges. That makes provider.yaml a copy of
+      # a 131-line upstream file, and copies drift.
+      #
+      # Compare them semantically, before the overlay, while the checkout is
+      # still pristine. Semantically and not with `diff`: the contribution copy
+      # carries explanatory comments and upstream reflows this file regularly,
+      # so a textual comparison would fail constantly for no reason and get
+      # deleted within a week.
+      #
+      # The failure this prevents is silent. An excerpt here once stripped
+      # `state` from the overlaid file and the entire suite died at
+      # pytest-plugin import with `KeyError: 'state'`, naming neither this file
+      # nor the operator.
+      # ------------------------------------------------------------------
+      - name: provider.yaml has not drifted from upstream
+        run: |
+          set -euo pipefail
+          "${REPO_DIR}/.venv/bin/python" - <<'PY'
+          import os, sys, yaml
+
+          repo_dir = os.environ["REPO_DIR"]
+          rel = "providers/apache/kafka/provider.yaml"
+          upstream = yaml.safe_load(open(os.path.join(repo_dir, rel)))
+          ours = yaml.safe_load(open(os.path.join("contribution", rel)))
+
+          def modules(doc):
+              return [m for block in doc.get("operators") or [] for m in block["python-modules"]]
+
+          added = [m for m in modules(ours) if m not in modules(upstream)]
+          print("modules this PR adds:", added or "(none)")
+
+          # Normalise away only the intended addition, then everything left over
+          # is drift.
+          for block in ours.get("operators") or []:
+              block["python-modules"] = [m for m in block["python-modules"] if m not in added]
+
+          if ours != upstream:
+              keys = sorted(
+                  k for k in set(ours) | set(upstream) if ours.get(k) != upstream.get(k)
+              )
+              sys.exit(
+                  f"::error::contribution/{rel} has drifted from upstream in {keys}. "
+                  "Re-copy upstream's file and re-apply the operator registration. "
+                  "Do NOT reduce it to an excerpt -- the overlay overwrites."
+              )
+          print(f"contribution/{rel} matches upstream except for the registration")
+          PY
+
+      # Forward-compatible: once /scaffold writes the new operator into
+      # contribution/, overlay it onto the pinned upstream checkout so the real
+      # upstream suites exercise it. No-op until that directory exists.
+      #
+      # Only DIRECTORIES are overlaid. That is the rule that separates the two
+      # kinds of thing living in contribution/:
+      #
+      #   contribution/providers/...   an upstream path -- part of the PR
+      #   contribution/README.md       a note about the PR -- not part of it
+      #
+      # `cp -r contribution/. $REPO_DIR/` copied both, and quietly replaced
+      # Apache Airflow's top-level README.md with a note about this operator.
+      # Harmless to the tests and exactly the kind of stray edit that gets a
+      # real PR sent back.
+      - name: Overlay contribution onto pinned checkout
+        run: |
+          set -euo pipefail
+          if [ ! -d contribution ]; then
+            echo "no contribution/ yet -- testing upstream unmodified"
+            exit 0
+          fi
+          shopt -s nullglob
+          dirs=(contribution/*/)
+          if [ ${#dirs[@]} -eq 0 ]; then
+            echo "::error::contribution/ has no directories to overlay"
+            exit 1
+          fi
+          for d in "${dirs[@]}"; do
+            echo "overlay: $d -> ${REPO_DIR}/"
+            cp -rv "$d" "${REPO_DIR}/"
+          done
+          for f in contribution/*; do
+            [ -f "$f" ] && echo "skipped (not an upstream path): $f"
+          done
+
+      - name: Assert the floor did not drift
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          set -euo pipefail
+          .venv/bin/python -c "
+          import confluent_kafka, sys
+          want = '${{ env.CONFLUENT_PIN }}'
+          got = confluent_kafka.__version__
+          if got != want:
+              sys.exit(f'::error::confluent-kafka drifted to {got}, expected the {want} floor')
+          print(f'confluent-kafka {got} (floor held)')
+          "
+
+      # Import the contribution before pytest touches it. pytest reports a
+      # collection-time ImportError as N errors across every test file, which
+      # reads like "the tests are broken" rather than "one import is wrong".
+      # This turns that into one line naming the seam.
+      - name: Contribution is importable
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY'
+          import sys
+          try:
+              from airflow.providers.apache.kafka.operators.reset_offsets import (
+                  ResetConsumerGroupOffsetsOperator as Op,
+              )
+          except ModuleNotFoundError as exc:
+              if exc.name and exc.name.split(".")[0] == "tools":
+                  sys.exit(
+                      f"::error::{exc}. The operator imports across the packaging "
+                      "seam; PYTHONPATH must include the crsr-demo checkout. See "
+                      "the job-level env block in int-tests.yml."
+                  )
+              raise
+          print(f"{Op.__name__} imported, template_fields={Op.template_fields}")
+          PY
+
+      - name: Unit tests
+        working-directory: ${{ env.REPO_DIR }}
+        run: .venv/bin/python -m pytest providers/apache/kafka/tests/unit -q
+
+      # Integration runs need BOTH gates: the env var AND the CLI flag.
+      # Setting only one silently skips every test and still reports success.
+      - name: Integration tests vs. real broker
+        working-directory: ${{ env.REPO_DIR }}
+        env:
+          INTEGRATION_KAFKA: "true"
+        run: |
+          .venv/bin/python -m pytest \
+            providers/apache/kafka/tests/integration -q --integration kafka
+
+      # Upstream's integration tests create topics and only test_admin_client.py
+      # cleans up after itself. Left alone they accumulate on a shared broker.
+      - name: Clean up leaked test topics
+        if: always()
+        run: |
+          set -euo pipefail
+          docker exec kafka /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server localhost:9092 --list 2>/dev/null \
+            | grep -E '^(operator|trigger)\..*\.test\.integration\.' \
+            | while read -r t; do
+                echo "deleting leaked topic: $t"
+                docker exec kafka /opt/kafka/bin/kafka-topics.sh \
+                  --bootstrap-server localhost:9092 --delete --topic "$t" 2>/dev/null || true
+              done
+          echo "cleanup done"

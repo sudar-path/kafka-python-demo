@@ -1,0 +1,13 @@
+# Declares the self-hosted runner labels actionlint cannot know about.
+#
+# Without this, actionlint reports `runs-on: [self-hosted, integration]` as an
+# unknown label and drowns the real findings in three false positives. Silencing
+# them here is what makes a clean actionlint run mean something.
+#
+# These correspond to the three EC2 boxes; see the infrastructure section of the
+# handoff. A job pinned to `production` runs on the PROD broker's host.
+self-hosted-runner:
+  labels:
+    - integration
+    - staging
+    - production

@@ -1,0 +1,52 @@
+# PROD — same shape as STAG, two deliberate differences:
+#
+#   1. Runs a *baked image* (Dockerfile) holding the released wheel, not a
+#      pip-install-at-startup. This is the only environment where the packaged
+#      artifact is exercised, and it makes rollback a real operation:
+#      rebuild with the previous wheel, redeploy.
+#   2. Canary DAGs only — read-only offset inspection, never alter. The
+#      mutating path is gated by policy in /promote.
+#
+# Prereq on the host:
+#   mkdir -p ~/airflow-prod/{dags,logs,plugins,dist,db}
+#   sudo chown 50000:0 ~/airflow-prod/logs ~/airflow-prod/db
+#   docker build --build-arg WHEEL=<wheel> -t airflow-kafka:1.15.1 .
+#
+# Only `logs` and `db` are chowned — see the note in ../staging/docker-compose.yml.
+
+services:
+  airflow:
+    image: airflow-kafka:1.15.1
+    container_name: airflow-prod
+    restart: unless-stopped
+    command: standalone
+    user: "50000:0"
+
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/db/airflow.db
+
+      AIRFLOW_CONN_KAFKA_DEFAULT: >-
+        {"conn_type": "kafka",
+         "extra": {"bootstrap.servers": "broker:19092",
+                   "group.id": "airflow-prod"}}
+
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      # Bind mount, not a named volume — see ../staging/docker-compose.yml.
+      - ./db:/opt/airflow/db
+
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    networks:
+      - kafka_default
+
+networks:
+  kafka_default:
+    external: true

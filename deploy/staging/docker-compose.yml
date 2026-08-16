@@ -1,0 +1,70 @@
+# STAG — Airflow 3.3.1, single-container standalone (api-server + scheduler +
+# dag-processor + triggerer, SQLite). Purpose: run the provider's *system tests*
+# under a real scheduler, which is the only place Jinja templating, Connection
+# resolution and XCom actually execute.
+#
+# Kafka: joins the pre-existing `kafka_default` network and reaches the broker on
+# its in-network advertised listener, PLAINTEXT://broker:19092.
+#
+# Prereq on the host:
+#   mkdir -p ~/airflow-stag/{dags,logs,plugins,dist,db}
+#   sudo chown 50000:0 ~/airflow-stag/logs ~/airflow-stag/db
+#   docker pull apache/airflow:3.3.1
+#
+# Only `logs` and `db` are chowned. Do NOT `chown -R` the whole tree: the ubuntu
+# user needs write access to dags/ and dist/ to deploy, and uid 50000 doesn't
+# exist on the host, so a recursive chown locks you out of your own directory.
+
+services:
+  airflow:
+    image: apache/airflow:3.3.1
+    container_name: airflow-stag
+    restart: unless-stopped
+    command: standalone
+    user: "50000:0"
+
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
+      # Default sqlite path is /opt/airflow/airflow.db, which is NOT on a volume.
+      # Point it into the mounted volume or the DB is lost on every recreate.
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/db/airflow.db
+
+      # Kafka connection, JSON form. The provider hides host/port and reads
+      # everything from `extra` (see provider.yaml ui-field-behaviour).
+      AIRFLOW_CONN_KAFKA_DEFAULT: >-
+        {"conn_type": "kafka",
+         "extra": {"bootstrap.servers": "broker:19092",
+                   "group.id": "airflow-stag"}}
+
+      # Install the provider wheel built from the PR at container start.
+      # Dev-only mechanism, deliberately chosen here for fast iteration —
+      # PROD uses a baked image instead (see ../production/Dockerfile).
+      # NOTE: no glob expansion here — set the exact filename in .env, e.g.
+      #   KAFKA_PROVIDER_WHEEL=apache_airflow_providers_apache_kafka-1.15.1-py3-none-any.whl
+      _PIP_ADDITIONAL_REQUIREMENTS: /opt/airflow/dist/${KAFKA_PROVIDER_WHEEL}
+
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./dist:/opt/airflow/dist:ro
+      # Bind mount, NOT a named volume: docker creates named-volume mountpoints
+      # root-owned, and this container runs as uid 50000 -> "unable to open
+      # database file". Host dir must be chown 50000:0.
+      - ./db:/opt/airflow/db
+
+    # Bound to loopback only — the security groups don't expose 8080 and
+    # shouldn't. Reach the UI with:
+    #   ssh -i <key>.pem -L 8080:localhost:8080 ubuntu@<stag-host>
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    networks:
+      - kafka_default
+
+networks:
+  kafka_default:
+    external: true

@@ -1,0 +1,19 @@
+# Additive override: expose a third listener on 29092 advertised as broker:29092.
+#
+# Why: upstream's own provider integration tests hardcode
+#   bootstrap.servers = "broker:29092"
+# because that is the address inside Airflow's Breeze CI harness. To run the
+# upstream suite UNMODIFIED against this broker, the broker has to answer on
+# that name and port. Modifying the tests instead would mean our green run no
+# longer proves anything about upstream's tests.
+#
+# Requires on the host:  127.0.0.1 broker   in /etc/hosts
+# Reverse with:          rm docker-compose.override.yaml && docker compose up -d
+services:
+  broker:
+    environment:
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,PLAINTEXT_TEST:PLAINTEXT"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT_HOST://localhost:9092,PLAINTEXT://broker:19092,PLAINTEXT_TEST://broker:29092"
+      KAFKA_LISTENERS: "CONTROLLER://:29093,PLAINTEXT_HOST://:9092,PLAINTEXT://:19092,PLAINTEXT_TEST://:29092"
+    ports:
+      - "127.0.0.1:29092:29092"

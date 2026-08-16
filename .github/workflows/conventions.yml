@@ -1,0 +1,149 @@
+name: conventions
+
+# The rule pack's own gate. Deliberately separate from int-tests.yml and
+# deliberately on a GitHub-hosted runner: this job needs no broker, no
+# self-hosted runner, and no secrets, so it stays green even when the VMs are
+# down and it is safe to run on fork PRs.
+#
+# It exists to make three claims checkable rather than asserted:
+#   1. the linter's detectors actually fire            (test_lint_conventions.py)
+#   2. the agent's context matches the rules           (gen_rules.py --check)
+#   3. the repo's own tooling obeys its own rules      (lint_conventions.py)
+#
+# Claim 2 is the one that decays silently. Without it, someone tightens a rule,
+# nobody regenerates .cursor/rules/, and the agent spends the next six months
+# confidently teaching the old convention.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conventions-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conventions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # stdlib + PyYAML + confluent-kafka. If this list ever grows again, the
+      # "runs anywhere, offline, in under a second" claim needs revisiting.
+      #
+      # confluent-kafka is here for its TYPES only -- OffsetSpec, TopicPartition,
+      # OFFSET_INVALID -- so that compute_diff() can be tested against a fake
+      # AdminClient. No broker is contacted by anything in this job; that is
+      # what int-tests.yml is for, and keeping this job broker-free is what lets
+      # it run on fork PRs with no secrets.
+      - name: Install dependencies
+        run: python -m pip install --quiet PyYAML 'confluent-kafka==2.6.0'
+
+      - name: Rule pack loads and every detector is proven
+        run: python tools/test_lint_conventions.py
+
+      # Track B: the seek arithmetic and the promotion gate. These are the two
+      # places a wrong answer is both consequential and invisible -- the diff
+      # feeds the artifact a human approves, and the gate is the last automated
+      # step before a production broker. Both had zero tests until 2026-08-16;
+      # the first run of test_offset_diff.py found a live bug (a 'Z'-suffixed
+      # timestamp was rejected on Python < 3.11, which is the exact form the
+      # error message told operators to use).
+      - name: Seek arithmetic is correct
+        run: python tools/test_offset_diff.py
+
+      - name: Promotion policy gate actually denies
+        run: python tools/test_policy_check.py
+
+      # The shell guard is a control, and this repo's standing rule is that an
+      # unproven control is worse than none: everyone believes it is there.
+      - name: Shell guard blocks what it claims to
+        run: python tools/test_shell_guard.py
+
+      # The rehearsal harness, and by extension the workflows themselves: this
+      # generates a shell script from every workflow in .github/workflows and
+      # runs `bash -n` over it. A quoting bug in a `run:` block otherwise
+      # surfaces only when that workflow next fires -- which for stag-tests.yml
+      # means after a merge to main, and for promote-prod.yml means in front of
+      # an approver.
+      - name: Workflows are rehearsable (and their shell parses)
+        run: python tools/test_workflow_dryrun.py
+
+      # The three non-engineer views. Tested here for the same reason as the
+      # rest: they make claims about coverage and about what runs where, and a
+      # claim nobody checks is just a document.
+      - name: Stakeholder views are derived, not written
+        run: python tools/test_views.py
+
+      # ...and then actually rendered, into the run summary of every PR. A
+      # report that has to be remembered and run by hand is a report that gets
+      # run once, at the end, by the person who already knows the answer.
+      # QA sees the coverage table and the gap list on the PR that creates the
+      # gap; DevOps sees the promotion matrix on the PR that changes it.
+      - name: Render the QA and DevOps views
+        run: |
+          set -euo pipefail
+          {
+            python tools/views.py qa
+            echo ""
+            echo "---"
+            echo ""
+            python tools/views.py devops
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generated agent context matches rules/
+        run: python tools/gen_rules.py --check
+
+      - name: This repo obeys its own conventions
+        run: python tools/lint_conventions.py . --summary
+
+      # Claim 4: every enforceable rule fires on a real mistake in the real
+      # contribution, not just on a synthetic fixture. test_lint_conventions.py
+      # proves the detectors work; this proves they are aimed at the code an
+      # engineer actually writes. A rule whose glob stops matching contribution/
+      # keeps passing its unit test and silently guards nothing.
+      - name: Every rule fires on a real mistake
+        run: PY=python tools/demo_dry_run.sh -q
+
+      # Backstop, not the primary control. handoff.md carries infrastructure
+      # hostnames, an SSH key path, and credentials context; it is in
+      # .gitignore and .cursorignore. This step is here because the cost of the
+      # check is one line and the cost of the miss is not recoverable by
+      # deleting the file afterwards.
+      - name: No operational notes in the tree
+        run: |
+          # Fail closed. Every check below infers "clean" from git producing no
+          # output, so anything that stops git producing output -- a missing
+          # checkout, a shallow clone, a wrong working directory -- reads as a
+          # pass. Caught on 2026-08-16 by rehearsing this job outside a git repo:
+          # it printed `fatal: not a git repository`, then `clean:`, then exited
+          # 0. The same failure-open shape the shell guard's failClosed flag
+          # exists to prevent, in the step that is supposed to be the backstop.
+          if ! git rev-parse --git-dir >/dev/null 2>&1; then
+            echo "::error::not a git repository -- this check cannot run, and a " \
+                 "check that cannot run must not report clean" >&2
+            exit 1
+          fi
+          if git ls-files --error-unmatch handoff.md >/dev/null 2>&1; then
+            echo "::error::handoff.md is tracked. It must never be committed." >&2
+            exit 1
+          fi
+          leaked=$(git ls-files -- '*.pem' '*.key' 'docs/changes/*' 'baselines/*' \
+                                   'tools/run_on_int.sh' 'tools/reset_demo.sh' \
+                                   '*.pdf' '*settings.local.json')
+          if [ -n "$leaked" ]; then
+            echo "::error::secrets or generated offset data are tracked:" >&2
+            echo "$leaked" >&2
+            exit 1
+          fi
+          echo "clean: no operational notes, keys, or offset artifacts tracked"

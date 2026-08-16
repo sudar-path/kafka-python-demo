@@ -1,0 +1,68 @@
+# Production promotion policy for consumer-group offset seeks.
+#
+# This file IS the gate. tools/policy_check.py is a dumb evaluator over these
+# values -- it contains no thresholds of its own and no model. Changing what
+# production permits means editing this file in a reviewed PR, not editing code.
+#
+# Every key under `rules:` maps to a named function in policy_check.py. A key
+# the evaluator does not recognise is a HARD ERROR, so a typo fails the pipeline
+# instead of silently disabling a rule.
+#
+# Owners are load-bearing: they are who a denial gets escalated to, and they are
+# how this survives its author leaving.
+
+version: 1
+environment: production
+owners:
+  - "@sudar-path"
+
+rules:
+  # ---- scope -------------------------------------------------------------
+  # An allowlist rather than a denylist. A new topic in production is not
+  # covered by this gate until someone adds it here on purpose.
+  allowed_topics:
+    - payments.events
+  allowed_groups:
+    - payments-reconciler
+
+  # ---- what may never happen in production -------------------------------
+  # to_earliest replays the entire retained log. For a settlement consumer that
+  # is a duplicate-payment event, not a recovery action. Rewinding is still
+  # possible in production via --shift-by or --to-timestamp, both of which are
+  # bounded and reviewable; this blocks only the unbounded form.
+  forbidden_modes:
+    - to_earliest
+
+  # Skipped messages are the irreversible half of a seek: those records are
+  # never processed by this group, and no rollback brings them back. Zero is the
+  # only defensible number in production.
+  max_messages_skipped: 0
+
+  # Replay is recoverable if consumers are idempotent, so it is capped rather
+  # than banned. 5000 is a starting value chosen to be comfortably above a
+  # routine recovery and below a full-topic replay -- it is a guess, and it
+  # should be revised the first time a legitimate change is denied by it.
+  max_messages_replayed: 5000
+
+  # A seek touching every partition at once is usually a blast-radius mistake.
+  max_partitions_changed: 3
+
+  # ---- correctness guards ------------------------------------------------
+  # An out-of-range offset is accepted by the broker and then silently resolved
+  # by the consumer's auto.offset.reset, so the observed behaviour is whatever
+  # that setting happens to be. Never allowed here.
+  allow_out_of_range: false
+
+  # A partition with no committed offset usually means the topic gained
+  # partitions after this change was written. Fail and make someone look.
+  allow_uncommitted_partitions: false
+
+  # ---- artifact integrity ------------------------------------------------
+  # Refuse a diff produced by a different version of offset_diff.py.
+  require_diff_schema_version: 1
+
+  # A dry run approved an hour later may no longer describe reality: the broker
+  # has moved on, so the offsets a human approved are not the offsets that would
+  # be written. 30 minutes is deliberately longer than an approval takes and
+  # shorter than a lunch break.
+  max_diff_age_seconds: 1800

@@ -1,0 +1,34 @@
+# Integration policy. Same evaluator, different data -- that is the whole point.
+#
+# INT exists to let people break things safely, so this is deliberately loose.
+# It is not a weaker copy of prod.yaml maintained in parallel; it is the same
+# rule set with different values, which is why a rule added to the evaluator
+# shows up as "not configured" here until someone decides what INT should do
+# about it. Silence is visible.
+
+version: 1
+environment: integration
+owners:
+  - "@sudar-path"
+
+rules:
+  # No topic or group allowlist on purpose: INT is where new topics get tried.
+  # policy_check.py reports both as "not configured" so the gap is visible in
+  # the artifact rather than being mistaken for coverage.
+
+  # Nothing is forbidden outright here -- to_earliest is a normal INT operation.
+  forbidden_modes: []
+
+  # Skipping data in INT is fine; there is no downstream consumer of record.
+  max_messages_skipped: 1000000
+  max_messages_replayed: 1000000
+  max_partitions_changed: 64
+
+  # Still false. An out-of-range offset is a bug wherever it happens, and
+  # letting it pass in INT defeats the purpose of testing the change in INT.
+  allow_out_of_range: false
+
+  allow_uncommitted_partitions: true
+
+  require_diff_schema_version: 1
+  # No max_diff_age_seconds: nobody is waiting on a human approval here.
