@@ -65,6 +65,7 @@ jobs:
   deployed-airflow:
     name: "Deployed Airflow + promotion gate"
     runs-on: [self-hosted, integration]
+    environment: integration
     timeout-minutes: 25
 
     # Skip when INT failed. Without this, workflow_run fires on `completed`
