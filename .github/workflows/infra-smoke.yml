@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  integration-smoke:
-    name: Integration VM Smoke Test
-    runs-on: [self-hosted, integration]
+  dev-smoke:
+    name: DEV VM Smoke Test
+    runs-on: [self-hosted, development]
 
     steps:
       - name: Show host
