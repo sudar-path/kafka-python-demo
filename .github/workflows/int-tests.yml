@@ -36,7 +36,7 @@
 # 2026-08-10 -> 1786320000000 and 2026-08-14 -> 1786665600000, offsets held at
 # 83/99/98 across three DagRuns.
 
-name: STAG tests
+name: INT tests
 
 on:
   # STAG runs AFTER INT has passed, not in parallel with it. A staging leg that
@@ -64,7 +64,7 @@ concurrency:
 jobs:
   deployed-airflow:
     name: "Deployed Airflow + promotion gate"
-    runs-on: [self-hosted, staging]
+    runs-on: [self-hosted, integration]
     timeout-minutes: 25
 
     # Skip when INT failed. Without this, workflow_run fires on `completed`
