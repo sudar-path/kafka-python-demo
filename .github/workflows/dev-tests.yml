@@ -6,7 +6,7 @@
 #
 # Verified by hand on the INT VM 2026-08-15: 79 unit + 9 integration green.
 
-name: INT tests
+name: DEV tests
 
 on:
   push:
@@ -28,7 +28,7 @@ jobs:
     # `production` here: PROD's broker deliberately does NOT expose the
     # broker:29092 test listener these tests require, and adding one to a
     # production broker to make CI pass would be exactly the wrong instinct.
-    runs-on: [self-hosted, integration]
+    runs-on: [self-hosted, development]
     timeout-minutes: 30
 
     # ------------------------------------------------------------------
