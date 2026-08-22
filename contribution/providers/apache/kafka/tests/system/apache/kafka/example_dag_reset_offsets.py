@@ -33,8 +33,8 @@ with DAG(
 ) as dag:
     ResetConsumerGroupOffsetsOperator(
         task_id="preview_reset_to_interval_start",
-        group_id="example_group",
-        topics=["example_topic"],
+        group_id="payments-reconciler",
+        topics=["payments.events"],
         to_timestamp="{{ data_interval_start }}",
         dry_run=True,
     )
