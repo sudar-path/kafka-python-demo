@@ -355,9 +355,9 @@ from __future__ import annotations
 Touchpoint 2, and the one that decides whether the contribution is worth
 making at all.
 
-The whole argument for ResetConsumerGroupOffsetsOperator is this DAG:
+The whole argument for ExampleOperator is this DAG:
 
-    rewind = ResetConsumerGroupOffsetsOperator(
+    rewind = ExampleOperator(
         task_id="rewind",
         group_id="etl_orders",
         topics=["orders"],
@@ -388,7 +388,7 @@ slots into -- the new operator has to match it, not invent it.
 **Do this instead**
 
 ```python
-class ResetConsumerGroupOffsetsOperator(BaseOperator):
+class ExampleOperator(BaseOperator):
     template_fields: Sequence[str] = (
         "group_id", "topics", "to_timestamp", "kafka_config_id",
     )
@@ -442,7 +442,7 @@ operators:
     python-modules:
       - airflow.providers.apache.kafka.operators.consume
       - airflow.providers.apache.kafka.operators.produce
-      - airflow.providers.apache.kafka.operators.reset_offsets   # <-- add
+      - airflow.providers.apache.kafka.operators.example_operator   # <-- add
 ```
 
 **References**
@@ -492,8 +492,8 @@ zero.
 **Do this instead**
 
 ```python
-# for contribution/.../operators/reset_offsets.py, create:
-providers/apache/kafka/tests/unit/apache/kafka/operators/test_reset_offsets.py
+# for contribution/.../operators/example_operator.py, create:
+providers/apache/kafka/tests/unit/apache/kafka/operators/test_example_operator.py
 ```
 
 **References**

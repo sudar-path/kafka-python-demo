@@ -6,22 +6,12 @@ generated into `.cursor/rules/`.
 ## What this repo is
 
 Tooling that helps a new engineer land a first contribution to
-`apache/airflow`'s Kafka provider, and then get it to production safely.
+apache/airflow's Kafka provider and move it safely through the
+software delivery lifecycle.
 
-The contribution is `ResetConsumerGroupOffsetsOperator`. The gap it fills: the
-provider can move a consumer group *forward* and cannot tell you where it is.
-`KafkaAdminClientHook` exposes only `create_topic` / `delete_topic`, and
-`provider.yaml` registers only `operators.consume` and `operators.produce` —
-there is no admin operator at all. The payoff is one line in a DAG:
-
-```python
-ResetConsumerGroupOffsetsOperator(
-    task_id="rewind",
-    group_id="etl_orders",
-    topics=["orders"],
-    to_timestamp="{{ data_interval_start }}",   # Kafka, backfillable from Airflow
-)
-```
+The feature requirement comes from the assigned GitHub Issue.
+Do not assume implementation details that are not present in the
+issue or discoverable from the approved repository context.
 
 ## Layout
 
@@ -38,7 +28,7 @@ ResetConsumerGroupOffsetsOperator(
 | `tools/capture_offsets.py` | Writes the rollback point before anything mutates. |
 | `tools/apply_offsets.py` | The only tool that mutates. Applies an approved artifact verbatim. |
 | `policy/*.yaml` | Per-environment promotion policy. |
-| `deploy/` | INT / STAG / PROD environments. |
+| `deploy/` | DEV / INT / PROD environments. |
 | `.github/workflows/` | The INT gate and the production promotion gate. |
 
 ## How to verify your own work

@@ -31,9 +31,7 @@
 # upstream paths, and a PR edits whole files. Anything less than the whole file
 # is a document about the change, not the change.
 #
-# The cost is that this copy can drift from upstream. int-tests.yml diffs the
-# two before overlaying and fails if they differ by anything other than the
-# reset_offsets line below, so the drift is caught rather than trusted.
+# The cost is that this copy can drift from upstream.
 
 package-name: apache-airflow-providers-apache-kafka
 name: Apache Kafka
@@ -96,12 +94,6 @@ operators:
     python-modules:
       - airflow.providers.apache.kafka.operators.consume
       - airflow.providers.apache.kafka.operators.produce
-      # Added by this PR (touchpoint 3), and the least discoverable one:
-      # nothing in reset_offsets.py references this file and nothing here
-      # references that module. The coupling lives in a pre-commit hook, so
-      # an operator that works perfectly locally is rejected by CI for a
-      # reason unrelated to the code that was written. Delete this line and
-      # lint_conventions.py fails PROV-004 -- that is the check working.
       - airflow.providers.apache.kafka.operators.reset_offsets
 
 asset-uris:

@@ -46,7 +46,7 @@ replacement: |
       python-modules:
         - airflow.providers.apache.kafka.operators.consume
         - airflow.providers.apache.kafka.operators.produce
-        - airflow.providers.apache.kafka.operators.reset_offsets   # <-- add
+        - airflow.providers.apache.kafka.operators.example_operator   # <-- add
 
 references:
   - "handoff.md §3 -- touchpoint 3, and the gap being filled"

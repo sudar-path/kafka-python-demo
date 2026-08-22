@@ -60,7 +60,7 @@ This Operator subclass does not declare `template_fields`. Without it, Jinja tem
 Do this instead:
 
 ```python
-class ResetConsumerGroupOffsetsOperator(BaseOperator):
+class ExampleOperator(BaseOperator):
     template_fields: Sequence[str] = (
         "group_id", "topics", "to_timestamp", "kafka_config_id",
     )
@@ -69,9 +69,9 @@ class ResetConsumerGroupOffsetsOperator(BaseOperator):
 **Why:** Touchpoint 2, and the one that decides whether the contribution is worth
 making at all.
 
-The whole argument for ResetConsumerGroupOffsetsOperator is this DAG:
+The whole argument for ExampleOperator is this DAG:
 
-    rewind = ResetConsumerGroupOffsetsOperator(
+    rewind = ExampleOperator(
         task_id="rewind",
         group_id="etl_orders",
         topics=["orders"],
@@ -93,7 +93,7 @@ operators:
     python-modules:
       - airflow.providers.apache.kafka.operators.consume
       - airflow.providers.apache.kafka.operators.produce
-      - airflow.providers.apache.kafka.operators.reset_offsets   # <-- add
+      - airflow.providers.apache.kafka.operators.example_operator   # <-- add
 ```
 
 **Why:** Touchpoint 3, and the single least discoverable one. Nothing in the operator

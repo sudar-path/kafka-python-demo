@@ -26,30 +26,22 @@ if TYPE_CHECKING:
     from airflow.utils.context import Context
 
 
-class ResetConsumerGroupOffsetsOperator(BaseOperator):
-    """Move a Kafka consumer group's committed offsets to a chosen position.
+class ExampleOperator(BaseOperator):
+    """Skeleton for a Kafka provider operator.
 
-    Fills the gap the provider leaves: the existing operators can only move a
-    group forward, and none of them can tell you where it currently is. With
-    this, a Kafka-backed pipeline becomes backfillable from Airflow::
+    Replace this class, its parameters, and ``execute()`` with the behaviour
+    the issue asks for. The surrounding structure -- licence header, future
+    annotations, ``template_fields``, constructor, ``super()`` -- is what the
+    static rules check.
 
-        ResetConsumerGroupOffsetsOperator(
-            task_id="rewind",
-            group_id="etl_orders",
-            topics=["orders"],
-            to_timestamp="{{ data_interval_start }}",
+        ExampleOperator(
+            task_id="example",
+            resource_id="demo-resource",
+            target="{{ ds }}",
         )
 
-    :param group_id: consumer group to move. Must be ``Empty`` -- Kafka refuses
-        the commit if any member is live, and so does this operator, up front,
-        with a clearer message.
-    :param topics: topics whose partitions are moved.
-    :param to_timestamp: seek to the first offset at or after this time.
-        Templated -- this is the parameter that makes backfill work.
-    :param to_offset: seek every partition to this absolute offset.
-    :param shift_by: move each partition by this delta, clamped to the
-        watermarks.
-    :param dry_run: compute and log the diff, commit nothing.
+    :param resource_id: identifier the operator acts on.
+    :param target: value a DAG author might template.
     :param kafka_config_id: the Airflow connection to use.
     """
 
@@ -57,11 +49,8 @@ class ResetConsumerGroupOffsetsOperator(BaseOperator):
     # listed. Omitting one does not raise -- it silently passes the literal
     # "{{ ... }}" string through, which is worse than a failure.
     template_fields: Sequence[str] = (
-        "group_id",
-        "topics",
-        "to_timestamp",
-        "to_offset",
-        "shift_by",
+        "resource_id",
+        "target",
         "kafka_config_id",
     )
     ui_color = "#e8f5e9"
@@ -69,35 +58,19 @@ class ResetConsumerGroupOffsetsOperator(BaseOperator):
     def __init__(
         self,
         *,
-        group_id: str,
-        topics: Sequence[str],
-        to_timestamp: str | None = None,
-        to_offset: int | None = None,
-        shift_by: int | None = None,
-        dry_run: bool = False,
+        resource_id: str,
+        target: str,
         kafka_config_id: str = "kafka_default",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self.group_id = group_id
-        self.topics = topics
-        self.to_timestamp = to_timestamp
-        self.to_offset = to_offset
-        self.shift_by = shift_by
-        self.dry_run = dry_run
+        self.resource_id = resource_id
+        self.target = target
         self.kafka_config_id = kafka_config_id
 
     def execute(self, context: Context) -> dict[str, Any]:
         # Validate in execute(), not __init__(): templated fields are not
         # rendered yet at construction time, so a check there would inspect the
         # literal "{{ ... }}" string and reject a perfectly valid DAG.
-        modes = [m for m in (self.to_timestamp, self.to_offset, self.shift_by) if m is not None]
-        if len(modes) != 1:
-            raise ValueError("exactly one of to_timestamp, to_offset, shift_by is required")
-
         hook = KafkaAdminClientHook(kafka_config_id=self.kafka_config_id)
-
-        # Share one code path with the CLI dry run (tools/offset_diff.py) so the
-        # preview a human approves is the same computation this operator runs.
-        # Reimplementing it here is how the two quietly diverge.
-        raise NotImplementedError("call compute_diff(), then commit unless self.dry_run")
+        raise NotImplementedError("implement the operator body using hook")

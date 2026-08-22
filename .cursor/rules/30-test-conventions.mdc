@@ -19,8 +19,8 @@ No mirrored unit test found. Upstream's layout requires tests/unit/apache/kafka/
 Do this instead:
 
 ```python
-# for contribution/.../operators/reset_offsets.py, create:
-providers/apache/kafka/tests/unit/apache/kafka/operators/test_reset_offsets.py
+# for contribution/.../operators/example_operator.py, create:
+providers/apache/kafka/tests/unit/apache/kafka/operators/test_example_operator.py
 ```
 
 **Why:** Touchpoint 5. The mirror is not a style preference -- pytest collection and

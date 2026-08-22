@@ -21,9 +21,9 @@ rationale: |
   Touchpoint 2, and the one that decides whether the contribution is worth
   making at all.
 
-  The whole argument for ResetConsumerGroupOffsetsOperator is this DAG:
+  The whole argument for ExampleOperator is this DAG:
 
-      rewind = ResetConsumerGroupOffsetsOperator(
+      rewind = ExampleOperator(
           task_id="rewind",
           group_id="etl_orders",
           topics=["orders"],
@@ -49,7 +49,7 @@ evidence: |
   slots into -- the new operator has to match it, not invent it.
 
 replacement: |
-  class ResetConsumerGroupOffsetsOperator(BaseOperator):
+  class ExampleOperator(BaseOperator):
       template_fields: Sequence[str] = (
           "group_id", "topics", "to_timestamp", "kafka_config_id",
       )
