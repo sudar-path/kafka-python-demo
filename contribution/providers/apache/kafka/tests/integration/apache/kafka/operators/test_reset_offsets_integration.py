@@ -93,7 +93,7 @@ class TestResetConsumerGroupOffsetsOperatorIntegration:
     def test_dry_run_does_not_mutate_committed_offsets(self, hook, bootstrap, topic):
         group = f"operator.reset.test.group.{uuid4().hex[:8]}"
         _seed_committed_offsets(bootstrap, topic, group)
-        admin = hook.get_conn()
+        admin = hook.get_conn
         before = read_committed(admin, group, topic, timeout=10.0)
         assert before
 
@@ -111,7 +111,7 @@ class TestResetConsumerGroupOffsetsOperatorIntegration:
     def test_timestamp_reset_applies_when_not_dry_run(self, hook, bootstrap, topic):
         group = f"operator.reset.test.group.{uuid4().hex[:8]}"
         _seed_committed_offsets(bootstrap, topic, group)
-        admin = hook.get_conn()
+        admin = hook.get_conn
         before = read_committed(admin, group, topic, timeout=10.0)
         assert before
 

@@ -135,7 +135,9 @@ class ResetConsumerGroupOffsetsOperator(BaseOperator):
         millis = _to_epoch_millis(self.to_timestamp)
 
         hook = KafkaAdminClientHook(kafka_config_id=self.kafka_config_id)
-        admin = hook.get_conn()
+        # KafkaBaseHook exposes get_conn as a property that returns AdminClient.
+        # Calling it raises TypeError: 'AdminClient' object is not callable.
+        admin = hook.get_conn
 
         previews: list[dict[str, Any]] = []
         for topic in topic_list:

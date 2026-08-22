@@ -101,12 +101,13 @@ class TestResetConsumerGroupOffsetsOperator:
         ) as hook_cls, mock.patch(
             "airflow.providers.apache.kafka.operators.reset_offsets.compute_diff",
             return_value=_sample_diff(),
-        ), mock.patch(
+        ) as compute, mock.patch(
             "airflow.providers.apache.kafka.operators.reset_offsets.apply_seek"
         ):
             operator.execute({})
         hook_cls.assert_called_once_with(kafka_config_id="kafka_default")
-        hook_cls.return_value.get_conn.assert_called_once()
+        # get_conn is the AdminClient (a property), not a method.
+        assert compute.call_args.args[0] is hook_cls.return_value.get_conn
 
     def test_dry_run_does_not_apply(self, operator):
         with mock.patch(
@@ -136,7 +137,7 @@ class TestResetConsumerGroupOffsetsOperator:
         ) as apply:
             operator.execute({})
         apply.assert_called_once()
-        admin = hook_cls.return_value.get_conn.return_value
+        admin = hook_cls.return_value.get_conn
         assert apply.call_args.args[0] is admin
         assert apply.call_args.args[1]["topic"] == "orders"
         assert apply.call_args.args[1]["group"] == "etl_orders"
