@@ -20,7 +20,7 @@
 # NOT verified end to end: the `production` environment's required-reviewer rule
 # is repository configuration, not file configuration -- see the preflight below.
 
-name: Promote to PROD
+name: PROD Kafka Offset Change
 
 on:
   workflow_dispatch:
