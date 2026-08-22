@@ -55,10 +55,9 @@ ones that fail CI, and they are cheapest to do while the module is fresh.
 4. **Mirror the test path exactly** (`TEST-001`). A unit test one directory off
    is silently never collected — the suite stays green and the code is untested.
 
-5. **Wire the dry run to shared code.** If the operator has a `dry_run=True`
-   mode, call `compute_diff()` from `tools/offset_diff.py` rather than
-   reimplementing the calculation. One code path means the preview a human
-   approves is the same computation the operator performs.
+5. **Reuse the existing hook.** Call `KafkaAdminClientHook` (or extend it in
+   `hooks/client.py`) rather than opening a second client inside the operator.
+   Two clients means two config paths, and they quietly diverge.
 
 6. **Verify before you report:**
 
@@ -73,16 +72,16 @@ ones that fail CI, and they are cheapest to do while the module is fresh.
 ## The `template_fields` trap
 
 This is the one that silently destroys the feature rather than breaking the
-build. The entire argument for `ResetConsumerGroupOffsetsOperator` is:
+build. The entire argument for `ExampleOperator` is:
 
 ```python
-to_timestamp="{{ data_interval_start }}"    # Kafka, backfillable from Airflow
+target="{{ ds }}"    # rendered by the Airflow scheduler
 ```
 
-If `to_timestamp` is not in `template_fields`, the operator receives the literal
-string `"{{ data_interval_start }}"`. **Nothing errors.** The seek just goes
-somewhere absurd. A mocked unit test cannot see it, and it only surfaces under a
-real scheduler. Hence `PROV-003` is a static rule rather than a review comment.
+If `target` is not in `template_fields`, the operator receives the literal
+string `"{{ ds }}"`. **Nothing errors.** The task just does the wrong thing.
+A mocked unit test cannot see it, and it only surfaces under a real scheduler.
+Hence `PROV-003` is a static rule rather than a review comment.
 
 ## Assets
 

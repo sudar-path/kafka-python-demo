@@ -44,8 +44,8 @@ evidence: |
   zero.
 
 replacement: |
-  # for contribution/.../operators/reset_offsets.py, create:
-  providers/apache/kafka/tests/unit/apache/kafka/operators/test_reset_offsets.py
+  # for contribution/.../operators/example_operator.py, create:
+  providers/apache/kafka/tests/unit/apache/kafka/operators/test_example_operator.py
 
 references:
   - "handoff.md §3 -- touchpoint 5"

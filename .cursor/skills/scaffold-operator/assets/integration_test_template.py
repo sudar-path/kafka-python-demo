@@ -30,6 +30,9 @@ from uuid import uuid4
 import pytest
 
 from airflow.providers.apache.kafka.hooks.client import KafkaAdminClientHook
+from airflow.providers.apache.kafka.operators.example_operator import (
+    ExampleOperator,
+)
 
 
 @pytest.fixture
@@ -46,24 +49,24 @@ def topic(hook):
     the test body only cleans up on the happy path, which is precisely when
     cleanup matters least.
     """
-    name = f"operator.reset.test.integration.{uuid4().hex[:8]}"
+    name = f"operator.example.test.integration.{uuid4().hex[:8]}"
     hook.create_topic(topics=[(name, 3, 1)])
     yield name
     hook.delete_topic(topics=[name])
 
 
-class TestResetConsumerGroupOffsetsIntegration:
-    def test_seek_to_offset_moves_committed_position(self, hook, topic):
-        # Arrange: produce, consume, commit -- then assert the group moved.
+class TestExampleOperatorIntegration:
+    def test_operator_against_a_live_broker(self, hook, topic):
+        # Arrange a resource, run the operator, assert the broker state changed.
+        ExampleOperator(
+            task_id="example",
+            resource_id=topic,
+            target="demo-target",
+        )
         raise NotImplementedError
 
-    def test_dry_run_leaves_committed_offsets_untouched(self, hook, topic):
-        """Read the committed offsets, run with dry_run=True, read again, assert
-        equal. Against a live broker, because that is the only place the
-        property is real -- a mocked assertion here would prove nothing."""
-        raise NotImplementedError
-
-    def test_refuses_a_group_with_live_members(self, hook, topic):
-        """Kafka rejects the commit anyway; the point is failing early with a
-        message that names the problem instead of surfacing a broker error."""
+    def test_teardown_runs_even_when_the_body_fails(self, hook, topic):
+        """The fixture teardown is the cleanup. Do not rely on a delete at
+        the end of the happy path only -- that is when cleanup matters least.
+        """
         raise NotImplementedError

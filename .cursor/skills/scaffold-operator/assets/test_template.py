@@ -17,8 +17,8 @@
 # under the License.
 """Unit tests. TEST-001: this file must live at the mirrored path
 
-    src/airflow/providers/apache/kafka/operators/reset_offsets.py
-    -> tests/unit/apache/kafka/operators/test_reset_offsets.py
+    src/airflow/providers/apache/kafka/operators/example_operator.py
+    -> tests/unit/apache/kafka/operators/test_example_operator.py
 
 One directory off and pytest never collects it. The suite stays green and the
 code is untested, which is the worst outcome available.
@@ -29,61 +29,43 @@ from unittest import mock
 
 import pytest
 
-from airflow.providers.apache.kafka.operators.reset_offsets import (
-    ResetConsumerGroupOffsetsOperator,
+from airflow.providers.apache.kafka.operators.example_operator import (
+    ExampleOperator,
 )
 
 
 @pytest.fixture
 def operator():
-    return ResetConsumerGroupOffsetsOperator(
-        task_id="rewind",
-        group_id="etl_orders",
-        topics=["orders"],
-        to_offset=100,
+    return ExampleOperator(
+        task_id="example",
+        resource_id="demo-resource",
+        target="demo-target",
     )
 
 
-class TestResetConsumerGroupOffsets:
-    def test_exactly_one_mode_required(self):
-        """Zero modes and two modes are both errors, and both are easy to write."""
-        op = ResetConsumerGroupOffsetsOperator(
-            task_id="t", group_id="g", topics=["x"]
-        )
-        with pytest.raises(ValueError, match="exactly one of"):
-            op.execute({})
+class TestExampleOperator:
+    def test_constructs_with_required_args(self, operator):
+        assert operator.resource_id == "demo-resource"
+        assert operator.target == "demo-target"
 
-        op = ResetConsumerGroupOffsetsOperator(
-            task_id="t", group_id="g", topics=["x"], to_offset=1, shift_by=1
-        )
-        with pytest.raises(ValueError, match="exactly one of"):
-            op.execute({})
-
-    def test_template_fields_cover_every_seek_mode(self, operator):
+    def test_template_fields_cover_templatable_args(self, operator):
         """PROV-003 as a unit test as well as a lint rule.
 
-        The lint rule proves `template_fields` exists. This proves the right
-        things are IN it -- specifically to_timestamp, without which
-        `{{ data_interval_start }}` arrives as a literal string and the backfill
-        story silently does not work.
+        The lint rule proves ``template_fields`` exists. This proves the right
+        things are IN it -- specifically every constructor argument a DAG
+        author might template. Leave one out and ``{{ ds }}`` arrives as a
+        literal string; nothing errors, and the task does the wrong thing.
         """
-        for field in ("group_id", "topics", "to_timestamp", "to_offset", "shift_by"):
+        for field in ("resource_id", "target", "kafka_config_id"):
             assert field in operator.template_fields
 
-    def test_dry_run_commits_nothing(self, operator):
-        """The safety property, asserted in code rather than in a docstring.
-
-        This test exists because this project already shipped a tool documented
-        as read-only that created topics on a live broker. A mock that records
-        calls is the cheapest possible guard against repeating that.
+    def test_execute_goes_through_the_hook(self, operator):
+        """Patch the hook where the operator imports it, not at the hooks
+        package. A patch one module off never intercepts the call.
         """
-        operator.dry_run = True
         with mock.patch(
-            "airflow.providers.apache.kafka.operators.reset_offsets.KafkaAdminClientHook"
+            "airflow.providers.apache.kafka.operators.example_operator.KafkaAdminClientHook"
         ) as hook_cls:
-            admin = hook_cls.return_value.get_conn
-            operator.execute({})
-        assert not any(
-            "commit" in str(call) or "alter" in str(call)
-            for call in admin.mock_calls
-        ), "dry_run must not issue a mutating call"
+            with pytest.raises(NotImplementedError):
+                operator.execute({})
+        hook_cls.assert_called_once_with(kafka_config_id="kafka_default")
