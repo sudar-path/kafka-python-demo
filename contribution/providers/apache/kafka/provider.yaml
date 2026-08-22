@@ -94,6 +94,7 @@ operators:
     python-modules:
       - airflow.providers.apache.kafka.operators.consume
       - airflow.providers.apache.kafka.operators.produce
+      - airflow.providers.apache.kafka.operators.reset_offsets
 
 asset-uris:
   - schemes: [kafka]
