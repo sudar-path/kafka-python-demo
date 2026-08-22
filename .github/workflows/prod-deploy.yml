@@ -1,0 +1,74 @@
+name: PROD software promotion
+
+# Phase 3A:
+# Prove the software delivery handoff:
+#
+# DEV tests
+#   -> QA approval
+#   -> INT tests
+#   -> DevOps approval
+#   -> PROD runner
+#
+# This workflow intentionally DOES NOT deploy software yet.
+# Actual immutable artifact/commit promotion will be added in Phase 3B.
+
+on:
+  workflow_run:
+    workflows: ["INT tests"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prod-software-promotion
+  cancel-in-progress: false
+
+jobs:
+  prod-gate:
+    name: PROD software promotion
+
+    # Never promote after a failed INT run.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    # Physical execution target.
+    runs-on: [self-hosted, production]
+
+    # Human approval gate.
+    # Required reviewers are configured in:
+    # Settings -> Environments -> production
+    environment: production
+
+    timeout-minutes: 10
+
+    steps:
+      - name: Show promotion candidate
+        run: |
+          echo "INT workflow: ${{ github.event.workflow_run.name }}"
+          echo "INT run ID:   ${{ github.event.workflow_run.id }}"
+          echo "INT result:   ${{ github.event.workflow_run.conclusion }}"
+          echo "Branch:       ${{ github.event.workflow_run.head_branch }}"
+          echo "Commit SHA:   ${{ github.event.workflow_run.head_sha }}"
+
+      - name: Show PROD runner
+        run: |
+          echo "GitHub runner: ${{ runner.name }}"
+          echo "Hostname:"
+          hostname
+          echo
+          uname -a
+
+      - name: Check PROD prerequisites
+        run: |
+          set -euo pipefail
+
+          git --version
+          docker --version
+          docker compose version
+          docker ps
+
+      - name: Phase 3A complete
+        run: |
+          echo "PROD approval succeeded."
+          echo "PROD self-hosted runner is reachable."
+          echo "No software was deployed in Phase 3A."
