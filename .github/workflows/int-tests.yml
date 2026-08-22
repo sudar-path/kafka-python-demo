@@ -49,7 +49,7 @@ on:
   #   * actions/checkout defaults to the default branch HEAD, NOT the commit
   #     that triggered the upstream run. Pinned explicitly in the checkout step.
   workflow_run:
-    workflows: ["INT tests"]
+    workflows: ["DEV tests"]
     types: [completed]
   # Always available as an escape hatch: if the chain above misbehaves, the
   # staging leg must still be runnable rather than silently skipped.
