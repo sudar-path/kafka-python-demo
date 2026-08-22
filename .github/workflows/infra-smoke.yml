@@ -33,9 +33,9 @@ jobs:
             --bootstrap-server localhost:9092 \
             --list
 
-  staging-smoke:
-    name: Staging VM Smoke Test
-    runs-on: [self-hosted, staging]
+  int-smoke:
+    name: INT VM Smoke Test
+    runs-on: [self-hosted, integration]
 
     steps:
       - name: Show host
