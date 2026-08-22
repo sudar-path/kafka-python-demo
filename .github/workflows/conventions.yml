@@ -73,8 +73,8 @@ jobs:
       # The rehearsal harness, and by extension the workflows themselves: this
       # generates a shell script from every workflow in .github/workflows and
       # runs `bash -n` over it. A quoting bug in a `run:` block otherwise
-      # surfaces only when that workflow next fires -- which for stag-tests.yml
-      # means after a merge to main, and for promote-prod.yml means in front of
+      # surfaces only when that workflow next fires -- which for int-tests.yml
+      # means after a merge to main, and for offset-change-prod.yml means in front of
       # an approver.
       - name: Workflows are rehearsable (and their shell parses)
         run: python tools/test_workflow_dryrun.py

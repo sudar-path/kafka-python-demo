@@ -49,7 +49,7 @@ def run_script(script: str, cwd: str):
 
 class GeneratedShellTest(unittest.TestCase):
     def test_the_generated_script_is_valid_bash(self):
-        script = generate(os.path.join(WORKFLOWS, "stag-tests.yml"), None, allow=False)
+        script = generate(os.path.join(WORKFLOWS, "int-tests.yml"), None, allow=False)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "s.sh")
             with open(path, "w") as fh:
@@ -281,10 +281,9 @@ class ShippedWorkflowsTest(unittest.TestCase):
     generatable, the rehearsal step quietly stops covering it."""
 
     JOBS = {
-        "stag-tests.yml": [None],
         "int-tests.yml": [None],
         "conventions.yml": [None],
-        # promote-prod.yml is driven by workflow_dispatch inputs, so its run
+        # offset-change-prod.yml is driven by workflow_dispatch inputs, so its run
         # bodies legitimately carry ${{ inputs.* }}. It is rehearsable only with
         # --allow-expressions, and rehearsing it means running the APPLY job
         # against a broker -- which is not something a test does.
@@ -304,13 +303,13 @@ class ShippedWorkflowsTest(unittest.TestCase):
                         )
                     self.assertEqual(proc.returncode, 0, f"{name}: {proc.stderr}")
 
-    def test_promote_prod_needs_the_escape_hatch(self):
+    def test_offset_change_prod_needs_the_escape_hatch(self):
         """Documents the exclusion above rather than leaving it to a comment: if
-        promote-prod.yml ever stops using inputs inline, this test fails and the
+        offset-change-prod.yml ever stops using inputs inline, this test fails and the
         workflow should be added to JOBS."""
-        path = os.path.join(WORKFLOWS, "promote-prod.yml")
+        path = os.path.join(WORKFLOWS, "offset-change-prod.yml")
         if not os.path.exists(path):
-            self.skipTest("promote-prod.yml not present")
+            self.skipTest("offset-change-prod.yml not present")
         with self.assertRaises(SystemExit):
             generate(path, "dry-run", allow=False)
 
@@ -335,7 +334,7 @@ class ShellFailureModeTest(unittest.TestCase):
          HEALTHY outcome for a leak check, but grep calls it exit 1, so the
          cleanup step passed only when there was something to clean up.
 
-    Both are scanned as text across every workflow, including promote-prod.yml,
+    Both are scanned as text across every workflow, including offset-change-prod.yml,
     which the rehearsal harness cannot generate.
     """
 
@@ -387,7 +386,7 @@ class ShellFailureModeTest(unittest.TestCase):
                 if re.match(r"^(if|while|until|elif)\s", stripped):
                     continue
                 # So does ANY `||` after the grep -- `|| true`, `|| :`, and the
-                # `| grep -qx true || { ... }` guard idiom in stag-tests.yml,
+                # `| grep -qx true || { ... }` guard idiom in int-tests.yml,
                 # which is correct code and which an earlier, narrower version of
                 # this check flagged. A rule that fires on correct code is worth
                 # less than no rule: it gets suppressed, and then the real

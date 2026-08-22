@@ -103,11 +103,11 @@ TEST_LAYERS = [
      "leaves the broker untouched",
      "nothing about a DagRun. to_timestamp is passed as a literal epoch here, so "
      "template rendering is still unproven"),
-    ("system / DagRun", "stag-tests.yml",
+    ("system / DagRun", "int-tests.yml",
      "to_timestamp='{{ data_interval_start }}' renders per run, on a deployed Airflow "
      "with a different Python and provider version than INT",
      "runs dry_run=True only. The apply path is never exercised by a DAG"),
-    ("promotion gate", "stag-tests.yml, promote-prod.yml",
+    ("promotion gate", "int-tests.yml, offset-change-prod.yml",
      "the policy evaluator allows a bounded rewind and denies to_earliest, on real "
      "broker data, for the named rule",
      "cannot tell you the policy VALUES are right -- only that they are enforced"),
@@ -358,7 +358,7 @@ def devops_view(root: str) -> str:
               "an agent shell, `failClosed: true`. Proven by `tools/test_shell_guard.py`.",
               "* The `production` environment's required-reviewer rule is REPOSITORY "
               "configuration, not file configuration. A workflow cannot grant itself an "
-              "approver, so `promote-prod.yml` asserts rather than assumes — and if the "
+              "approver, so `offset-change-prod.yml` asserts rather than assumes — and if the "
               "repo's visibility or plan changes, that rule can vanish silently.",
               "* PROD deliberately does not expose the `broker:29092` test listener that "
               "INT and STAG carry. Making a workflow need it would be the wrong fix."]

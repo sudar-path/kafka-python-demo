@@ -159,7 +159,7 @@ jobs:
           set -euo pipefail
           # --clear: self-hosted runners reuse their workspace and `uv venv`
           # exits 2 rather than overwriting. Found while rehearsing
-          # stag-tests.yml on the box; the same line was latent here.
+          # int-tests.yml on the box; the same line was latent here.
           uv venv --clear --python 3.12 .venv-tools
           uv pip install -q --python .venv-tools/bin/python confluent-kafka==2.6.0 pyyaml
           .venv-tools/bin/python -c "import confluent_kafka,yaml;print('confluent-kafka',confluent_kafka.__version__)"

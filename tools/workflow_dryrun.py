@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn a GitHub Actions workflow into a shell script you can run before pushing.
 
-    python tools/workflow_dryrun.py .github/workflows/stag-tests.yml -o /tmp/run.sh
+    python tools/workflow_dryrun.py .github/workflows/int-tests.yml -o /tmp/run.sh
     bash /tmp/run.sh
 
 The problem this solves: a self-hosted workflow can only be debugged by pushing.
@@ -16,8 +16,8 @@ part matters: the runner stops at the first red step, so you find one bug per
 push. This finds all of them in one pass.
 
 It found a real one the first time it was used: `uv venv .venv-tools` exits 2 on
-a runner that reuses its workspace, in stag-tests.yml AND latently in
-promote-prod.yml.
+a runner that reuses its workspace, in int-tests.yml AND latently in
+offset-change-prod.yml.
 
 WHAT IT DOES NOT EMULATE, and you must not read a green run here as a green run
 there:
